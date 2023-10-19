@@ -99,18 +99,19 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
         Sends the authentication message.
         :param ws: the websocket assistant used to connect to the exchange
         """
-        auth_message: WSJSONRequest = WSJSONRequest(payload=self._auth.generate_ws_authentication_message())
+        payload = await self._auth.generate_ws_authentication_message()
+        auth_message: WSJSONRequest = WSJSONRequest(payload=payload)
         await ws.send(auth_message)
 
     async def _process_ws_messages(self, ws: WSAssistant, output: asyncio.Queue):
         async for ws_response in ws.iter_messages():
             data = ws_response.data
-            if isinstance(data, list):
-                for message in data:
-                    if message["e"] in ["executionReport", "outboundAccountInfo"]:
-                        output.put_nowait(message)
-            elif data.get("auth") == "fail":
-                raise IOError("Private channel authentication failed.")
+            evt_type = data["type"]
+            if evt_type == CONSTANTS.LOGIN_EVENT_TYPE:
+                if data["status"] != "OK":
+                    raise IOError("Private channel authentication failed.")
+            else:
+                print(data)
 
     async def _get_ws_assistant(self) -> WSAssistant:
         if self._ws_assistant is None:

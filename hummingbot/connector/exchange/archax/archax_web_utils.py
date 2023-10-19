@@ -1,3 +1,4 @@
+import time
 from typing import Any, Callable, Dict, Optional
 
 import hummingbot.connector.exchange.archax.archax_constants as CONSTANTS
@@ -26,10 +27,7 @@ def build_api_factory(
         time_provider: Optional[Callable] = None,
         auth: Optional[AuthBase] = None, ) -> WebAssistantsFactory:
     time_synchronizer = time_synchronizer or TimeSynchronizer()
-    time_provider = time_provider or (lambda: get_current_server_time(
-        throttler=throttler,
-        domain=domain,
-    ))
+    time_provider = time_provider or (lambda: get_current_server_time())
     throttler = throttler or create_throttler()
     api_factory = WebAssistantsFactory(
         throttler=throttler,
@@ -107,18 +105,7 @@ async def api_request(path: str,
         return await response.json()
 
 
-async def get_current_server_time(
-        throttler: Optional[AsyncThrottler] = None,
-        domain: str = CONSTANTS.DEFAULT_DOMAIN,
-) -> float:
-    throttler = throttler or create_throttler()
-    api_factory = build_api_factory_without_time_synchronizer_pre_processor(throttler=throttler)
-    response = await api_request(
-        path=CONSTANTS.SERVER_TIME_PATH_URL,
-        api_factory=api_factory,
-        throttler=throttler,
-        domain=domain,
-        method=RESTMethod.GET)
-    server_time = response["result"]["serverTime"]
+async def get_current_server_time(throttler: Optional[AsyncThrottler] = None, domain: str = "") -> float:
+    server_time = time.time()
 
     return server_time

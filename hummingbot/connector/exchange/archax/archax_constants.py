@@ -22,19 +22,18 @@ WSS_PRIVATE_URL = {"archax_main": "wss://ace-auth.qat.archax.com/api/1.0/gateway
                    "archax_testnet": "wss://ace-auth.qat.archax.com/api/1.0/gateway"}
 
 # Websocket event types
+LOGIN_EVENT_TYPE = "user-login"
+INSTRUMENT_EVENT_TYPE = "instruments"
 DIFF_EVENT_TYPE = "market-depths"
-TRADE_EVENT_TYPE = "orders"
+TRADE_EVENT_TYPE = "transactions"
 SNAPSHOT_EVENT_TYPE = "market-depths"
 
 # Public API endpoints
-# LAST_TRADED_PRICE_PATH = "/spot/quote/v1/ticker/price"
+LOGIN_PATH_URL = "/login"
 EXCHANGE_INFO_PATH_URL = "/rest-gateway/reporting/instruments"
-# SNAPSHOT_PATH_URL = "/spot/quote/v1/depth"
-SERVER_TIME_PATH_URL = ""
+SERVER_TIME_PATH_URL = "/rest-gateway/reporting/instruments"
 
 # Private API endpoints
-ACCOUNTS_PATH_URL = ""
-# MY_TRADES_PATH_URL = "/spot/v1/myTrades"
 ORDER_PATH_URL = "/open-orders"
 
 # Order States
@@ -53,15 +52,12 @@ WS_HEARTBEAT_TIME_INTERVAL = 30
 
 # Rate Limit Type
 REQUEST_GET = "GET"
-# REQUEST_GET_BURST = "GET_BURST"
-# REQUEST_GET_MIXED = "GET_MIXED"
 REQUEST_POST = "POST"
-# REQUEST_POST_BURST = "POST_BURST"
-# REQUEST_POST_MIXED = "POST_MIXED"
 
 ONE_MINUTE = 60
 
 RATE_LIMITS = [
     RateLimit(limit_id=EXCHANGE_INFO_PATH_URL, limit=60, time_interval=ONE_MINUTE),
     RateLimit(limit_id=SERVER_TIME_PATH_URL, limit=60, time_interval=ONE_MINUTE),
+    RateLimit(limit_id=LOGIN_PATH_URL, limit=60, time_interval=ONE_MINUTE),
 ]

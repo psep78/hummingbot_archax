@@ -1,22 +1,24 @@
-import hashlib
-import hmac
+import asyncio
 import time
 from collections import OrderedDict
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
 
 import hummingbot.connector.exchange.archax.archax_constants as CONSTANTS
-from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.core.web_assistant.auth import AuthBase
-from hummingbot.core.web_assistant.connections.data_types import RESTRequest, WSRequest
+from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest, WSRequest
+from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
 
 class ArchaxAuth(AuthBase):
 
-    def __init__(self, api_key: str, secret_key: str, time_provider: TimeSynchronizer):
-        self.api_key = api_key
-        self.secret_key = secret_key
-        self.time_provider = time_provider
+    login_lock = asyncio.Lock()
+
+    def __init__(self, archax_email: str, archax_password: str, web_assistants_factory: WebAssistantsFactory, domain: str):
+        self.archax_email = archax_email
+        self.archax_password = archax_password
+        self.web_assistants_factory = web_assistants_factory
+        self.domain = domain
+        self.archax_jwt = str()
 
     @staticmethod
     def keysort(dictionary: Dict[str, str]) -> Dict[str, str]:
@@ -28,12 +30,7 @@ class ArchaxAuth(AuthBase):
         the required parameter in the request header.
         :param request: the request to be configured for authenticated interaction
         """
-        request.params = self.add_auth_to_params(params=request.params)
-        headers = {}
-        if request.headers is not None:
-            headers.update(request.headers)
-        request.headers = headers
-        return request
+        return request  # pass-through
 
     async def ws_authenticate(self, request: WSRequest) -> WSRequest:
         """
@@ -42,44 +39,64 @@ class ArchaxAuth(AuthBase):
         """
         return request  # pass-through
 
-    def get_referral_code_headers(self):
-        """
-        Generates authentication headers required by ByBit
-        :return: a dictionary of auth headers
-        """
-        headers = {
-            "referer": CONSTANTS.HBOT_BROKER_ID
-        }
-        return headers
+    async def _api_request(self,
+                           path_url,
+                           method: RESTMethod = RESTMethod.GET,
+                           params: Optional[Dict[str, Any]] = None,
+                           data: Optional[Dict[str, Any]] = None
+                           ) -> Dict[str, Any]:
+        last_exception = None
+        rest_assistant = await self.web_assistants_factory.get_rest_assistant()
+        url = CONSTANTS.REST_URLS[self.domain] + path_url
+        local_headers = {
+            "Content-Type": "application/x-www-form-urlencoded"}
+        for _ in range(2):
+            try:
+                request_result = await rest_assistant.execute_request(
+                    url=url,
+                    params=params,
+                    data=data,
+                    method=method,
+                    is_auth_required=False,
+                    return_err=True,
+                    headers=local_headers,
+                    throttler_limit_id=path_url,
+                )
+                return request_result
+            except IOError as request_exception:
+                last_exception = request_exception
+                raise
 
-    def add_auth_to_params(self,
-                           params: Optional[Dict[str, Any]]):
-        timestamp = int(self.time_provider.time() * 1e3)
-        request_params = params or {}
-        request_params["timestamp"] = timestamp
-        request_params["api_key"] = self.api_key
-        request_params = self.keysort(request_params)
-        signature = self._generate_signature(params=request_params)
-        request_params["sign"] = signature
-        return request_params
+        # Failed even after the last retry
+        raise last_exception
 
-    def _generate_signature(self, params: Dict[str, Any]) -> str:
-        encoded_params_str = urlencode(params)
-        digest = hmac.new(self.secret_key.encode("utf8"), encoded_params_str.encode("utf8"), hashlib.sha256).hexdigest()
-        return digest
+    async def _login(self):
+        async with ArchaxAuth.login_lock:
+            if len(self.archax_jwt) == 0:
+                params = {
+                    "email": self.archax_email,
+                    "password": self.archax_password
+                }
 
-    def generate_ws_authentication_message(self):
+                login_response = await self._api_request(
+                    method=RESTMethod.POST,
+                    path_url=CONSTANTS.LOGIN_PATH_URL,
+                    params=params)
+                self.archax_jwt = login_response["data"]["jwt"]
+
+            return self.archax_jwt
+
+    async def generate_ws_authentication_message(self):
         """
         Generates the authentication message to start receiving messages from
         the 3 private ws channels
         """
-        expires = int((self.time_provider.time() + 10) * 1e3)
-        _val = f'GET/realtime{expires}'
-        signature = hmac.new(self.secret_key.encode("utf8"),
-                             _val.encode("utf8"), hashlib.sha256).hexdigest()
+        await self._login()
+
         auth_message = {
-            "op": "auth",
-            "args": [self.api_key, expires, signature]
+            "action": "login",
+            "service": "core",
+            "token": self.archax_jwt
         }
         return auth_message
 

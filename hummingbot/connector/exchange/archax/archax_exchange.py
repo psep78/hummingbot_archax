@@ -40,8 +40,8 @@ class ArchaxExchange(ExchangePyBase):
                  trading_required: bool = True,
                  domain: str = CONSTANTS.DEFAULT_DOMAIN,
                  ):
-        self.api_key = archax_email
-        self.secret_key = archax_password
+        self.archax_email = archax_email
+        self.archax_password = archax_password
         self._domain = domain
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
@@ -59,9 +59,10 @@ class ArchaxExchange(ExchangePyBase):
     @property
     def authenticator(self):
         return ArchaxAuth(
-            api_key=self.api_key,
-            secret_key=self.secret_key,
-            time_provider=self._time_synchronizer)
+            archax_email=self.archax_email,
+            archax_password=self.archax_password,
+            web_assistants_factory=self._create_web_assistants_factory(),
+            domain=self._domain)
 
     @property
     def name(self) -> str:
@@ -138,10 +139,11 @@ class ArchaxExchange(ExchangePyBase):
             throttler=self._throttler,
             time_synchronizer=self._time_synchronizer,
             domain=self._domain,
-            auth=self._auth)
+            auth=None)
 
     def _create_order_book_data_source(self) -> OrderBookTrackerDataSource:
         return ArchaxAPIOrderBookDataSource(
+            auth=self._auth,
             trading_pairs=self._trading_pairs,
             connector=self,
             domain=self.domain,
@@ -413,26 +415,8 @@ class ArchaxExchange(ExchangePyBase):
         return order_update
 
     async def _update_balances(self):
-        local_asset_names = set(self._account_balances.keys())
-        remote_asset_names = set()
-
-        account_info = await self._api_request(
-            method=RESTMethod.GET,
-            path_url=CONSTANTS.ACCOUNTS_PATH_URL,
-            is_auth_required=True)
-        balances = account_info["result"]["balances"]
-        for balance_entry in balances:
-            asset_name = balance_entry["coin"]
-            free_balance = Decimal(balance_entry["free"])
-            total_balance = Decimal(balance_entry["total"])
-            self._account_available_balances[asset_name] = free_balance
-            self._account_balances[asset_name] = total_balance
-            remote_asset_names.add(asset_name)
-
-        asset_names_to_remove = local_asset_names.difference(remote_asset_names)
-        for asset_name in asset_names_to_remove:
-            del self._account_available_balances[asset_name]
-            del self._account_balances[asset_name]
+        # not supported
+        pass
 
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
         mapping = bidict()
@@ -441,16 +425,17 @@ class ArchaxExchange(ExchangePyBase):
         self._set_trading_pair_symbol_map(mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
-        params = {
-            "symbol": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair),
-        }
-        resp_json = await self._api_request(
-            method=RESTMethod.GET,
-            path_url=CONSTANTS.LAST_TRADED_PRICE_PATH,
-            params=params,
-        )
+        return 1.0
+        # params = {
+        #     "symbol": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair),
+        # }
+        # resp_json = await self._api_request(
+        #     method=RESTMethod.GET,
+        #     path_url=CONSTANTS.LAST_TRADED_PRICE_PATH,
+        #     params=params,
+        # )
 
-        return float(resp_json["result"]["price"])
+        # return float(resp_json["result"]["price"])
 
     async def _api_request(self,
                            path_url,

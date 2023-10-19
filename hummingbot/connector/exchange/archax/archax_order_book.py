@@ -20,12 +20,12 @@ class ArchaxOrderBook(OrderBook):
         """
         if metadata:
             msg.update(metadata)
-        ts = msg["t"]
+        ts = timestamp
         return OrderBookMessage(OrderBookMessageType.SNAPSHOT, {
             "trading_pair": msg["trading_pair"],
             "update_id": ts,
-            "bids": msg["b"],
-            "asks": msg["a"]
+            "bids": msg["buy"],
+            "asks": msg["sell"]
         }, timestamp=timestamp)
 
     @classmethod
@@ -42,12 +42,12 @@ class ArchaxOrderBook(OrderBook):
         """
         if metadata:
             msg.update(metadata)
-        ts = msg["time"]
+        ts = timestamp
         return OrderBookMessage(OrderBookMessageType.SNAPSHOT, {
             "trading_pair": msg["trading_pair"],
             "update_id": ts,
-            "bids": msg["bids"],
-            "asks": msg["asks"]
+            "bids": msg["buy"],
+            "asks": msg["sell"]
         }, timestamp=timestamp)
 
     @classmethod
@@ -64,12 +64,12 @@ class ArchaxOrderBook(OrderBook):
         """
         if metadata:
             msg.update(metadata)
-        ts = msg["t"]
+        ts = timestamp
         return OrderBookMessage(OrderBookMessageType.DIFF, {
             "trading_pair": msg["trading_pair"],
             "update_id": ts,
-            "bids": msg["b"],
-            "asks": msg["a"]
+            "bids": msg["buy"],
+            "asks": msg["sell"]
         }, timestamp=timestamp)
 
     @classmethod
