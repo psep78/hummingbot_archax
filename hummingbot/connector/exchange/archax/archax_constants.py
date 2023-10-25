@@ -7,8 +7,14 @@ HBOT_ORDER_ID_PREFIX = "ARCHAX-"
 MAX_ORDER_ID_LEN = 32
 HBOT_BROKER_ID = "Hummingbot"
 
-SIDE_BUY = "BUY"
-SIDE_SELL = "SELL"
+SIDE_BUY = 0
+SIDE_SELL = 1
+
+ORDER_TYPE_LIMIT = 0
+ORDER_TYPE_MARKET = 1
+
+ORDER_PLACEMENT_TIMEOUT_MS = 3000
+ORDER_CANCEL_TIMEOUT_MS = 3000
 
 TIME_IN_FORCE_GTC = "GTC"
 # Base URL
@@ -23,15 +29,22 @@ WSS_PRIVATE_URL = {"archax_main": "wss://ace-auth.qat.archax.com/api/1.0/gateway
 
 # Websocket event types
 LOGIN_EVENT_TYPE = "user-login"
+BALANCE_EVENT_TYPE = "balances"
 INSTRUMENT_EVENT_TYPE = "instruments"
 DIFF_EVENT_TYPE = "market-depths"
-TRADE_EVENT_TYPE = "transactions"
+TRADE_EVENT_TYPE = "trade-histories"
 SNAPSHOT_EVENT_TYPE = "market-depths"
+NOTIFICATIONS_EVENT_TYPE = "notifications"
+ORDER_SUBMITTED_EVENT_TYPE = "order-submitted"
+ORDER_UPDATED_EVENT_TYPE = "order-updated"
+ORDER_CANCELLED_EVENT_TYPE = "order-cancelled"
+ORDER_CANCEL_REJECTED_EVENT_TYPE = "cancel-rejected"
+ORDER_CANCEL_FAILED_EVENT_TYPE = "cancel-failed"
 
 # Public API endpoints
 LOGIN_PATH_URL = "/login"
 EXCHANGE_INFO_PATH_URL = "/rest-gateway/reporting/instruments"
-SERVER_TIME_PATH_URL = "/rest-gateway/reporting/instruments"
+SERVER_TIME_PATH_URL = "/health-check"
 
 # Private API endpoints
 ORDER_PATH_URL = "/open-orders"

@@ -1,5 +1,6 @@
-import time
 from typing import Any, Callable, Dict, Optional
+
+from dateutil.parser import isoparse
 
 import hummingbot.connector.exchange.archax.archax_constants as CONSTANTS
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
@@ -105,7 +106,16 @@ async def api_request(path: str,
         return await response.json()
 
 
-async def get_current_server_time(throttler: Optional[AsyncThrottler] = None, domain: str = "") -> float:
-    server_time = time.time()
+async def get_current_server_time(throttler: Optional[AsyncThrottler] = None, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> float:
+    throttler = throttler or create_throttler()
+    api_factory = build_api_factory_without_time_synchronizer_pre_processor(throttler=throttler)
+    response = await api_request(
+        path=CONSTANTS.SERVER_TIME_PATH_URL,
+        api_factory=api_factory,
+        throttler=throttler,
+        domain=domain,
+        method=RESTMethod.GET)
+    server_time = isoparse(response["timestamp"])
+    time_stamp = server_time.timestamp()
 
-    return server_time
+    return time_stamp * 1e3

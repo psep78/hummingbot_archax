@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Dict, Optional
 
 from hummingbot.core.data_type.common import TradeType
@@ -53,6 +54,8 @@ class ArchaxOrderBook(OrderBook):
     @classmethod
     def diff_message_from_exchange(cls,
                                    msg: Dict[str, any],
+                                   px_decimal: Decimal,
+                                   qty_decimal: Decimal,
                                    timestamp: Optional[float] = None,
                                    metadata: Optional[Dict] = None) -> OrderBookMessage:
         """
@@ -65,15 +68,29 @@ class ArchaxOrderBook(OrderBook):
         if metadata:
             msg.update(metadata)
         ts = timestamp
+
+        bids = []
+        asks = []
+
+        for item in msg["buy"]:
+            bids.append([Decimal(item) / px_decimal, Decimal(msg["buy"][item]) / qty_decimal])
+
+        for item in msg["sell"]:
+            asks.append([Decimal(item) / px_decimal, Decimal(msg["sell"][item]) / qty_decimal])
+
         return OrderBookMessage(OrderBookMessageType.DIFF, {
             "trading_pair": msg["trading_pair"],
             "update_id": ts,
-            "bids": msg["buy"],
-            "asks": msg["sell"]
+            "bids": bids,
+            "asks": asks
         }, timestamp=timestamp)
 
     @classmethod
-    def trade_message_from_exchange(cls, msg: Dict[str, any], metadata: Optional[Dict] = None):
+    def trade_message_from_exchange(cls,
+                                    msg: Dict[str, any],
+                                    px_decimal: Decimal,
+                                    qty_decimal: Decimal,
+                                    metadata: Optional[Dict] = None):
         """
         Creates a trade message with the information from the trade event sent by the exchange
         :param msg: the trade event details sent by the exchange
@@ -82,12 +99,12 @@ class ArchaxOrderBook(OrderBook):
         """
         if metadata:
             msg.update(metadata)
-        ts = msg["t"]
+        ts = msg["created"]
         return OrderBookMessage(OrderBookMessageType.TRADE, {
             "trading_pair": msg["trading_pair"],
-            "trade_type": float(TradeType.BUY.value) if msg["m"] else float(TradeType.SELL.value),
-            "trade_id": ts,
+            "trade_type": float(TradeType.BUY.value) if msg["side"] == "buy" else float(TradeType.SELL.value),
+            "trade_id": msg["tradeRef"],
             "update_id": ts,
-            "price": msg["p"],
-            "amount": msg["q"]
-        }, timestamp=ts * 1e-3)
+            "price": Decimal(msg["price"]) / px_decimal,
+            "amount": Decimal(msg["amount"]) / qty_decimal
+        }, timestamp=ts)

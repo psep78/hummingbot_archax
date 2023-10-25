@@ -1,4 +1,5 @@
 import asyncio
+import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -16,11 +17,12 @@ from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
-from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
+from hummingbot.core.data_type.trade_fee import TradeFeeBase
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.utils.estimate_fee import build_trade_fee
-from hummingbot.core.web_assistant.connections.data_types import RESTMethod
+from hummingbot.core.web_assistant.connections.data_types import RESTMethod, WSJSONRequest
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
+from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 
 if TYPE_CHECKING:
     from hummingbot.client.config.config_helpers import ClientConfigAdapter
@@ -45,7 +47,12 @@ class ArchaxExchange(ExchangePyBase):
         self._domain = domain
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
-        self._last_trades_poll_archax_timestamp = 1.0
+        self._mapping = bidict()
+        self._ws: Optional[WSAssistant] = None
+        self._user_stream: ArchaxAPIUserStreamDataSource
+        self._order_id_map: Dict[str, str] = dict()
+        self._order_cancel_map: Dict[str, bool] = dict()
+        self._decimal_map: Dict[str, tuple] = dict()
         super().__init__(client_config_map)
 
     @staticmethod
@@ -152,13 +159,14 @@ class ArchaxExchange(ExchangePyBase):
             time_synchronizer=self._time_synchronizer)
 
     def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
-        return ArchaxAPIUserStreamDataSource(
+        self._user_stream = ArchaxAPIUserStreamDataSource(
             auth=self._auth,
             throttler=self._throttler,
             time_synchronizer=self._time_synchronizer,
             api_factory=self._web_assistants_factory,
             domain=self.domain,
         )
+        return self._user_stream
 
     def _get_fee(self,
                  base_currency: str,
@@ -189,47 +197,66 @@ class ArchaxExchange(ExchangePyBase):
                            order_type: OrderType,
                            price: Decimal,
                            **kwargs) -> Tuple[str, float]:
-        amount_str = f"{amount:f}"
-        type_str = self.archax_order_type(order_type)
+        instrument_id = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
 
-        side_str = CONSTANTS.SIDE_BUY if trade_type is TradeType.BUY else CONSTANTS.SIDE_SELL
-        symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-        api_params = {"symbol": symbol,
-                      "side": side_str,
-                      "qty": amount_str,
-                      "type": type_str,
-                      "orderLinkId": order_id}
-        if order_type != OrderType.MARKET:
-            api_params["price"] = f"{price:f}"
-        if order_type == OrderType.LIMIT:
-            api_params["timeInForce"] = CONSTANTS.TIME_IN_FORCE_GTC
+        px_decimal, qty_decimal = self._decimal_map.get(trading_pair)
+        if px_decimal is None or qty_decimal is None:
+            self.logger().error(f"No trading rule for {trading_pair}")
+            raise ValueError(f"Place order failed: No trading rule for {trading_pair}")
 
-        order_result = await self._api_post(
-            path_url=CONSTANTS.ORDER_PATH_URL,
-            params=api_params,
-            is_auth_required=True,
-            trading_pair=trading_pair,
-            headers={"referer": CONSTANTS.HBOT_BROKER_ID},
-        )
+        payload = {
+            "action": "order-submit",
+            "data": {
+                "actionRef": f"{order_id}",
+                "instrumentId": f"{instrument_id}",
+                "limitPrice": f"{(price * px_decimal):f}",
+                "orderType": CONSTANTS.ORDER_TYPE_LIMIT if order_type is OrderType.LIMIT else CONSTANTS.ORDER_TYPE_MARKET,
+                "quantity": int(round(amount * qty_decimal, 0)),
+                "side": CONSTANTS.SIDE_BUY if trade_type is TradeType.BUY else CONSTANTS.SIDE_SELL,
+                "organisationId": 1
+            }
+        }
 
-        o_id = str(order_result["result"]["orderId"])
-        transact_time = int(order_result["result"]["transactTime"]) * 1e-3
-        return (o_id, transact_time)
+        ws = await self._user_stream._get_ws_assistant()
+        request: WSJSONRequest = WSJSONRequest(payload=payload)
+        await ws.send(request)
+
+        archax_order_id = await self.get_order_id(order_id, CONSTANTS.ORDER_PLACEMENT_TIMEOUT_MS)
+
+        if archax_order_id == "":
+            raise ValueError(f"Error submitting order {order_id}. Check logs for details")
+        elif archax_order_id == "-1":
+            raise ValueError(f"Timeout while waiting for order {order_id}. Check logs for details")
+
+        return (archax_order_id, time.time())
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
-        api_params = {}
-        if tracked_order.exchange_order_id:
-            api_params["orderId"] = tracked_order.exchange_order_id
-        else:
-            api_params["orderLinkId"] = tracked_order.client_order_id
-        cancel_result = await self._api_delete(
-            path_url=CONSTANTS.ORDER_PATH_URL,
-            params=api_params,
-            is_auth_required=True)
+        payload = {
+            "action": "order-cancel",
+            "data": {
+                "actionRef": f"{order_id}",
+                "orderId": f"{ tracked_order.exchange_order_id}",
+                "organisationId": 1
+            }
+        }
 
-        if isinstance(cancel_result, dict) and "orderLinkId" in cancel_result["result"]:
-            return True
-        return False
+        ws = await self._user_stream._get_ws_assistant()
+        if ws._connection.connected is False:
+            return False
+
+        request: WSJSONRequest = WSJSONRequest(payload=payload)
+        await ws.send(request)
+
+        return await self.get_order_cancel_status(order_id, CONSTANTS.ORDER_CANCEL_TIMEOUT_MS)
+
+        # if tracked_order.exchange_order_id:
+        #     api_params["orderId"] = tracked_order.exchange_order_id
+        # else:
+        #     api_params["orderLinkId"] = tracked_order.client_order_id
+        # cancel_result = await self._api_delete(
+        #     path_url=CONSTANTS.ORDER_PATH_URL,
+        #     params=api_params,
+        #     is_auth_required=True)
 
     async def _format_trading_rules(self, exchange_info_dict: Dict[str, Any]) -> List[TradingRule]:
         """
@@ -271,16 +298,24 @@ class ArchaxExchange(ExchangePyBase):
             ]
         }
         """
-        trading_pair_rules = exchange_info_dict.get("result", [])
+        trading_pair_rules = exchange_info_dict.get("data", [])
         retval = []
         for rule in trading_pair_rules:
             try:
-                trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=rule.get("name"))
+                if archax_utils.is_exchange_information_valid(rule) is False:
+                    continue
 
-                min_order_size = rule.get("minTradeQuantity")
-                min_price_increment = rule.get("minPricePrecision")
-                min_base_amount_increment = rule.get("basePrecision")
-                min_notional_size = rule.get("minTradeAmount")
+                trading_pair = f'{rule["symbol"]}-{rule["currency"]}'
+
+                px_decimal = Decimal(pow(10, rule.get("priceDecimalPlaces")))
+                qty_decimal = Decimal(pow(10, rule.get("quantityDecimalPlaces")))
+
+                self._decimal_map[trading_pair] = (px_decimal, qty_decimal)
+
+                min_order_size = Decimal(1.0) / Decimal(pow(10, rule.get("quantityDecimalPlaces")))
+                min_price_increment = rule.get("tickSize")
+                min_base_amount_increment = min_order_size
+                min_notional_size = rule.get("minimumOrderValue")
 
                 retval.append(
                     TradingRule(trading_pair,
@@ -305,111 +340,165 @@ class ArchaxExchange(ExchangePyBase):
         stream data source. It keeps reading events from the queue until the task is interrupted.
         The events received are balance updates, order updates and trade events.
         """
-        async for event_message in self._iter_user_event_queue():
+        async for data in self._iter_user_event_queue():
             try:
-                event_type = event_message.get("e")
-                if event_type == "executionReport":
-                    execution_type = event_message.get("X")
-                    client_order_id = event_message.get("c")
-                    tracked_order = self._order_tracker.fetch_order(client_order_id=client_order_id)
-                    if tracked_order is not None:
-                        if execution_type in ["PARTIALLY_FILLED", "FILLED"]:
-                            fee = TradeFeeBase.new_spot_fee(
-                                fee_schema=self.trade_fee_schema(),
-                                trade_type=tracked_order.trade_type,
-                                flat_fees=[TokenAmount(amount=Decimal(event_message["n"]), token=event_message["N"])]
-                            )
-                            trade_update = TradeUpdate(
-                                trade_id=str(event_message["t"]),
-                                client_order_id=client_order_id,
-                                exchange_order_id=str(event_message["i"]),
-                                trading_pair=tracked_order.trading_pair,
-                                fee=fee,
-                                fill_base_amount=Decimal(event_message["l"]),
-                                fill_quote_amount=Decimal(event_message["l"]) * Decimal(event_message["L"]),
-                                fill_price=Decimal(event_message["L"]),
-                                fill_timestamp=int(event_message["E"]) * 1e-3,
-                            )
-                            self._order_tracker.process_trade_update(trade_update)
-
-                        order_update = OrderUpdate(
-                            trading_pair=tracked_order.trading_pair,
-                            update_timestamp=int(event_message["E"]) * 1e-3,
-                            new_state=CONSTANTS.ORDER_STATE[event_message["X"]],
-                            client_order_id=client_order_id,
-                            exchange_order_id=str(event_message["i"]),
-                        )
-                        self._order_tracker.process_order_update(order_update=order_update)
-
-                elif event_type == "outboundAccountInfo":
-                    balances = event_message["B"]
-                    for balance_entry in balances:
-                        asset_name = balance_entry["a"]
-                        free_balance = Decimal(balance_entry["f"])
-                        total_balance = Decimal(balance_entry["f"]) + Decimal(balance_entry["l"])
-                        self._account_available_balances[asset_name] = free_balance
-                        self._account_balances[asset_name] = total_balance
-
+                self.logger().warn(f"WSS msg: {data}")
+                evt_type = data["type"]
+                if evt_type == CONSTANTS.BALANCE_EVENT_TYPE:
+                    self.process_balance_update(data)
+                elif evt_type == CONSTANTS.NOTIFICATIONS_EVENT_TYPE:
+                    action = data["action"]
+                    if action == CONSTANTS.ORDER_SUBMITTED_EVENT_TYPE:
+                        self.process_order_submit_notification(data)
+                    elif action == CONSTANTS.ORDER_UPDATED_EVENT_TYPE:
+                        self.process_order_update_notification(data)
+                    elif action == CONSTANTS.ORDER_CANCELLED_EVENT_TYPE:
+                        self.process_order_cancel_success_notification(data)
+                    elif action == CONSTANTS.ORDER_CANCEL_REJECTED_EVENT_TYPE or action == CONSTANTS.ORDER_CANCEL_FAILED_EVENT_TYPE:
+                        self.process_order_cancel_rejected_notification(data)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.logger().error("Unexpected error in user stream listener loop.", exc_info=True)
                 await self._sleep(5.0)
 
+    def process_balance_update(self, data: Dict[str, Any]):
+        if data["status"] != "OK":
+            return
+
+        for balance in data["data"]:
+            balance_item = data["data"][balance]
+            instrument_id = balance_item["instrumentId"]
+            if instrument_id not in self._mapping:
+                continue
+            asset_name = self._mapping[instrument_id]
+            free_balance = Decimal(balance_item["available"])
+            total_balance = Decimal(balance_item["total"])
+            self._account_available_balances[asset_name] = free_balance
+            self._account_balances[asset_name] = total_balance
+
+    def process_order_submit_notification(self, data: Dict[str, Any]):
+        status = data["status"]
+        hbt_order_id = data["data"]["actionRef"]
+        if status == "OK":
+            self._order_id_map[hbt_order_id] = data["data"]["orderId"]
+        else:
+            self.logger().warn(f'Order submit error: {data["data"]["error"]}')
+            self._order_id_map[hbt_order_id] = ""
+
+    def process_order_update_notification(self, data: Dict[str, Any]):
+        status = data["status"]
+        hbt_order_id = data["data"]["actionRef"]
+        self._order_id_map[hbt_order_id] = data["data"]["orderId"]
+        if status != "OK":
+            self.logger().warn(f'Order {hbt_order_id} submit error: {data["data"]["error"]}')
+
+    def process_order_cancel_success_notification(self, data: Dict[str, Any]):
+        status = data["status"]
+        hbt_order_id = data["data"]["actionRef"]
+        if status == "OK":
+            self._order_cancel_map[hbt_order_id] = True
+        else:
+            self.logger().error(f"Unexpected status: {status}")
+
+    def process_order_cancel_rejected_notification(self, data: Dict[str, Any]):
+        status = data["status"]
+        hbt_order_id = data["data"]["actionRef"]
+        if status == "ERROR":
+            self._order_cancel_map[hbt_order_id] = False
+        else:
+            self.logger().error(f"Unexpected status: {status}")
+
+    async def get_order_id(self, hbt_order_id: str, timeout_ms: int) -> str:
+        sleep_time = 100
+        iterations = int(timeout_ms / sleep_time)
+        for _ in range(iterations):
+            archax_order_id = self._order_id_map.get(hbt_order_id)
+            if archax_order_id is not None:
+                return archax_order_id
+            else:
+                await asyncio.sleep(10 / sleep_time)
+
+        self.logger().warn(f'Time out waiting for order: {hbt_order_id}')
+        return "0"
+
+    async def get_order_cancel_status(self, hbt_order_id: str, timeout_ms: int) -> bool:
+        sleep_time = 100
+        iterations = int(timeout_ms / sleep_time)
+        for _ in range(iterations):
+            result = self._order_cancel_map.get(hbt_order_id)
+            if result is not None:
+                return result
+            else:
+                await asyncio.sleep(10 / sleep_time)
+
+        self.logger().warn(f'Time out waiting for cancellation: {hbt_order_id}')
+        return False
+
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         trade_updates = []
 
         if order.exchange_order_id is not None:
-            exchange_order_id = int(order.exchange_order_id)
-            trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=order.trading_pair)
-            all_fills_response = await self._api_get(
-                path_url=CONSTANTS.MY_TRADES_PATH_URL,
-                params={
-                    "symbol": trading_pair,
-                    "orderId": exchange_order_id
-                },
-                is_auth_required=True,
-                limit_id=CONSTANTS.MY_TRADES_PATH_URL)
-            fills_data = all_fills_response.get("result", [])
-            if fills_data is not None:
-                for trade in fills_data:
-                    exchange_order_id = str(trade["orderId"])
-                    fee = TradeFeeBase.new_spot_fee(
-                        fee_schema=self.trade_fee_schema(),
-                        trade_type=order.trade_type,
-                        percent_token=trade["commissionAsset"],
-                        flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])]
-                    )
-                    trade_update = TradeUpdate(
-                        trade_id=str(trade["ticketId"]),
-                        client_order_id=order.client_order_id,
-                        exchange_order_id=exchange_order_id,
-                        trading_pair=trading_pair,
-                        fee=fee,
-                        fill_base_amount=Decimal(trade["qty"]),
-                        fill_quote_amount=Decimal(trade["price"]) * Decimal(trade["qty"]),
-                        fill_price=Decimal(trade["price"]),
-                        fill_timestamp=int(trade["executionTime"]) * 1e-3,
-                    )
-                    trade_updates.append(trade_update)
+            print(order.exchange_order_id)
+
+            # exchange_order_id = int(order.exchange_order_id)
+            # trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=order.trading_pair)
+            # all_fills_response = await self._api_get(
+            #     path_url=CONSTANTS.MY_TRADES_PATH_URL,
+            #     params={
+            #         "symbol": trading_pair,
+            #         "orderId": exchange_order_id
+            #     },
+            #     is_auth_required=True,
+            #     limit_id=CONSTANTS.MY_TRADES_PATH_URL)
+            # fills_data = all_fills_response.get("result", [])
+            # if fills_data is not None:
+            #     for trade in fills_data:
+            #         exchange_order_id = str(trade["orderId"])
+            #         fee = TradeFeeBase.new_spot_fee(
+            #             fee_schema=self.trade_fee_schema(),
+            #             trade_type=order.trade_type,
+            #             percent_token=trade["commissionAsset"],
+            #             flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])]
+            #         )
+            #         trade_update = TradeUpdate(
+            #             trade_id=str(trade["ticketId"]),
+            #             client_order_id=order.client_order_id,
+            #             exchange_order_id=exchange_order_id,
+            #             trading_pair=trading_pair,
+            #             fee=fee,
+            #             fill_base_amount=Decimal(trade["qty"]),
+            #             fill_quote_amount=Decimal(trade["price"]) * Decimal(trade["qty"]),
+            #             fill_price=Decimal(trade["price"]),
+            #             fill_timestamp=int(trade["executionTime"]) * 1e-3,
+            #         )
+            #         trade_updates.append(trade_update)
 
         return trade_updates
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
-        updated_order_data = await self._api_get(
-            path_url=CONSTANTS.ORDER_PATH_URL,
-            params={
-                "orderLinkId": tracked_order.client_order_id},
-            is_auth_required=True)
+        # updated_order_data = await self._api_get(
+        #     path_url=CONSTANTS.ORDER_PATH_URL,
+        #     params={
+        #         "orderLinkId": tracked_order.client_order_id},
+        #     is_auth_required=True)
 
-        new_state = CONSTANTS.ORDER_STATE[updated_order_data["result"]["status"]]
+        # new_state = CONSTANTS.ORDER_STATE[updated_order_data["result"]["status"]]
+
+        # order_update = OrderUpdate(
+        #     client_order_id=tracked_order.client_order_id,
+        #     exchange_order_id=str(updated_order_data["result"]["orderId"]),
+        #     trading_pair=tracked_order.trading_pair,
+        #     update_timestamp=int(updated_order_data["result"]["updateTime"]) * 1e-3,
+        #     new_state=new_state,
+        # )
 
         order_update = OrderUpdate(
             client_order_id=tracked_order.client_order_id,
-            exchange_order_id=str(updated_order_data["result"]["orderId"]),
+            exchange_order_id="",
             trading_pair=tracked_order.trading_pair,
-            update_timestamp=int(updated_order_data["result"]["updateTime"]) * 1e-3,
-            new_state=new_state,
+            update_timestamp=1111 * 1e-3,
+            new_state=CONSTANTS.ORDER_STATE["pending"],
         )
 
         return order_update
@@ -419,23 +508,12 @@ class ArchaxExchange(ExchangePyBase):
         pass
 
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
-        mapping = bidict()
         for symbol_data in filter(archax_utils.is_exchange_information_valid, exchange_info["data"]):
-            mapping[symbol_data["symbol"]] = combine_to_hb_trading_pair(base=symbol_data["symbol"], quote=symbol_data["currency"])
-        self._set_trading_pair_symbol_map(mapping)
+            self._mapping[symbol_data["id"]] = combine_to_hb_trading_pair(base=symbol_data["symbol"], quote=symbol_data["currency"])
+        self._set_trading_pair_symbol_map(self._mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
         return 1.0
-        # params = {
-        #     "symbol": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair),
-        # }
-        # resp_json = await self._api_request(
-        #     method=RESTMethod.GET,
-        #     path_url=CONSTANTS.LAST_TRADED_PRICE_PATH,
-        #     params=params,
-        # )
-
-        # return float(resp_json["result"]["price"])
 
     async def _api_request(self,
                            path_url,

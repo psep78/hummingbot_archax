@@ -21,6 +21,8 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
 
     _bausds_logger: Optional[HummingbotLogger] = None
 
+    wss_assistant_lock = asyncio.Lock()
+
     def __init__(self,
                  auth: ArchaxAuth,
                  domain: str = CONSTANTS.DEFAULT_DOMAIN,
@@ -110,13 +112,37 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
             if evt_type == CONSTANTS.LOGIN_EVENT_TYPE:
                 if data["status"] != "OK":
                     raise IOError("Private channel authentication failed.")
+                else:
+                    await self.subscribe_balance(ws)
+                    await self.subscribe_orders(ws)
             else:
-                print(data)
+                output.put_nowait(data)
 
     async def _get_ws_assistant(self) -> WSAssistant:
-        if self._ws_assistant is None:
-            self._ws_assistant = await self._api_factory.get_ws_assistant()
-        return self._ws_assistant
+        async with ArchaxAPIUserStreamDataSource.wss_assistant_lock:
+            if self._ws_assistant is None:
+                self._ws_assistant = await self._api_factory.get_ws_assistant()
+                # if self._ws_assistant._connection.connected is False:
+                #     await self._ws_assistant.connect(ws_url=CONSTANTS.WSS_PRIVATE_URL[self._domain])
+                #     await self._authenticate_connection(self._ws_assistant)
+            return self._ws_assistant
 
     def _time(self):
         return time.time()
+
+    async def subscribe_balance(self, ws: WSAssistant):
+        payload = {
+            "action": "subscribe-balances"
+        }
+        balance_request: WSJSONRequest = WSJSONRequest(payload=payload)
+        await ws.send(balance_request)
+
+    async def subscribe_orders(self, ws: WSAssistant):
+        payload = {
+            "action": "subscribe-orders",
+            "data": {
+                "organisationId": 1
+            }
+        }
+        order_request: WSJSONRequest = WSJSONRequest(payload=payload)
+        await ws.send(order_request)
