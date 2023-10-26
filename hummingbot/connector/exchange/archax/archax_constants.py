@@ -18,14 +18,14 @@ ORDER_CANCEL_TIMEOUT_MS = 3000
 
 TIME_IN_FORCE_GTC = "GTC"
 # Base URL
-REST_URLS = {"archax_main": "https://ace-auth.qat.archax.com/api/1.0",
-             "archax_testnet": "https://ace-auth.qat.archax.com/api/1.0"}
+REST_URLS = {"archax_main": "https://ace-auth.qat.archax.com/api/2.0",
+             "archax_testnet": "https://ace-auth.qat.archax.com/api/2.0"}
 
-WSS_V1_PUBLIC_URL = {"archax_main": "wss://ace-auth.qat.archax.com/api/1.0/gateway",
-                     "archax_testnet": "wss://ace-auth.qat.archax.com/api/1.0/gateway"}
+WSS_V1_PUBLIC_URL = {"archax_main": "wss://ace-auth.qat.archax.com/api/2.0/gateway",
+                     "archax_testnet": "wss://ace-auth.qat.archax.com/api/2.0/gateway"}
 
-WSS_PRIVATE_URL = {"archax_main": "wss://ace-auth.qat.archax.com/api/1.0/gateway",
-                   "archax_testnet": "wss://ace-auth.qat.archax.com/api/1.0/gateway"}
+WSS_PRIVATE_URL = {"archax_main": "wss://ace-auth.qat.archax.com/api/2.0/gateway",
+                   "archax_testnet": "wss://ace-auth.qat.archax.com/api/2.0/gateway"}
 
 # Websocket event types
 LOGIN_EVENT_TYPE = "user-login"
@@ -35,6 +35,7 @@ DIFF_EVENT_TYPE = "market-depths"
 TRADE_EVENT_TYPE = "trade-histories"
 SNAPSHOT_EVENT_TYPE = "market-depths"
 NOTIFICATIONS_EVENT_TYPE = "notifications"
+ORDERS_EVENT_TYPE = "orders"
 ORDER_SUBMITTED_EVENT_TYPE = "order-submitted"
 ORDER_UPDATED_EVENT_TYPE = "order-updated"
 ORDER_CANCELLED_EVENT_TYPE = "order-cancelled"
@@ -53,15 +54,13 @@ ORDER_PATH_URL = "/open-orders"
 ORDER_STATE = {
     "pending": OrderState.PENDING_CREATE,
     "open": OrderState.OPEN,
-    "PARTIALLY_FILLED": OrderState.PARTIALLY_FILLED,
     "completed": OrderState.FILLED,
-    # "PENDING_CANCEL": OrderState.PENDING_CANCEL,
     "cancelled": OrderState.CANCELED,
     "rejected": OrderState.FAILED,
     "expired": OrderState.FAILED
 }
 
-WS_HEARTBEAT_TIME_INTERVAL = 30
+WS_HEARTBEAT_TIME_INTERVAL = 3000
 
 # Rate Limit Type
 REQUEST_GET = "GET"

@@ -141,7 +141,7 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
         payload = {
             "action": "subscribe-orders",
             "data": {
-                "organisationId": 1
+                "organisationId": self._auth.primary_org
             }
         }
         order_request: WSJSONRequest = WSJSONRequest(payload=payload)

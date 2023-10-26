@@ -3,6 +3,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, Optional
 
+import jwt
+
 import hummingbot.connector.exchange.archax.archax_constants as CONSTANTS
 from hummingbot.core.web_assistant.auth import AuthBase
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest, WSRequest
@@ -19,6 +21,7 @@ class ArchaxAuth(AuthBase):
         self.web_assistants_factory = web_assistants_factory
         self.domain = domain
         self.archax_jwt = str()
+        self.primary_org = 0
 
     @staticmethod
     def keysort(dictionary: Dict[str, str]) -> Dict[str, str]:
@@ -83,6 +86,7 @@ class ArchaxAuth(AuthBase):
                     path_url=CONSTANTS.LOGIN_PATH_URL,
                     params=params)
                 self.archax_jwt = login_response["data"]["jwt"]
+                self.extract_org_id()
 
             return self.archax_jwt
 
@@ -99,6 +103,10 @@ class ArchaxAuth(AuthBase):
             "token": self.archax_jwt
         }
         return auth_message
+
+    def extract_org_id(self):
+        decoded_data = jwt.decode(jwt=self.archax_jwt, verify=False, algorithms=['RS256', ])
+        self.primary_org = decoded_data["primaryOrg"]
 
     def _time(self):
         return time.time()

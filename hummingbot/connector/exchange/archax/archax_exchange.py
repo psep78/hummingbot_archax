@@ -53,6 +53,7 @@ class ArchaxExchange(ExchangePyBase):
         self._order_id_map: Dict[str, str] = dict()
         self._order_cancel_map: Dict[str, bool] = dict()
         self._decimal_map: Dict[str, tuple] = dict()
+        self._order_cache: Dict[str, Any] = dict()
         super().__init__(client_config_map)
 
     @staticmethod
@@ -209,17 +210,19 @@ class ArchaxExchange(ExchangePyBase):
             "data": {
                 "actionRef": f"{order_id}",
                 "instrumentId": f"{instrument_id}",
-                "limitPrice": f"{(price * px_decimal):f}",
+                "limitPrice": int(round(price * px_decimal)),
                 "orderType": CONSTANTS.ORDER_TYPE_LIMIT if order_type is OrderType.LIMIT else CONSTANTS.ORDER_TYPE_MARKET,
                 "quantity": int(round(amount * qty_decimal, 0)),
                 "side": CONSTANTS.SIDE_BUY if trade_type is TradeType.BUY else CONSTANTS.SIDE_SELL,
-                "organisationId": 1
+                "organisationId": self._auth.primary_org
             }
         }
 
         ws = await self._user_stream._get_ws_assistant()
         request: WSJSONRequest = WSJSONRequest(payload=payload)
         await ws.send(request)
+
+        self.logger().warn(f"Sent place: {payload}")
 
         archax_order_id = await self.get_order_id(order_id, CONSTANTS.ORDER_PLACEMENT_TIMEOUT_MS)
 
@@ -236,7 +239,7 @@ class ArchaxExchange(ExchangePyBase):
             "data": {
                 "actionRef": f"{order_id}",
                 "orderId": f"{ tracked_order.exchange_order_id}",
-                "organisationId": 1
+                "organisationId": self._auth.primary_org
             }
         }
 
@@ -247,16 +250,9 @@ class ArchaxExchange(ExchangePyBase):
         request: WSJSONRequest = WSJSONRequest(payload=payload)
         await ws.send(request)
 
-        return await self.get_order_cancel_status(order_id, CONSTANTS.ORDER_CANCEL_TIMEOUT_MS)
+        self.logger().warn(f"Sent cancel: {payload}")
 
-        # if tracked_order.exchange_order_id:
-        #     api_params["orderId"] = tracked_order.exchange_order_id
-        # else:
-        #     api_params["orderLinkId"] = tracked_order.client_order_id
-        # cancel_result = await self._api_delete(
-        #     path_url=CONSTANTS.ORDER_PATH_URL,
-        #     params=api_params,
-        #     is_auth_required=True)
+        return await self.get_order_cancel_status(order_id, CONSTANTS.ORDER_CANCEL_TIMEOUT_MS)
 
     async def _format_trading_rules(self, exchange_info_dict: Dict[str, Any]) -> List[TradingRule]:
         """
@@ -356,11 +352,20 @@ class ArchaxExchange(ExchangePyBase):
                         self.process_order_cancel_success_notification(data)
                     elif action == CONSTANTS.ORDER_CANCEL_REJECTED_EVENT_TYPE or action == CONSTANTS.ORDER_CANCEL_FAILED_EVENT_TYPE:
                         self.process_order_cancel_rejected_notification(data)
+                elif evt_type == CONSTANTS.ORDERS_EVENT_TYPE:
+                    self.process_orders(data)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.logger().error("Unexpected error in user stream listener loop.", exc_info=True)
                 await self._sleep(5.0)
+
+    def process_orders(self, data: Dict[str, Any]):
+        if data["status"] != "OK":
+            return
+
+        for order in data["data"]:
+            self._order_cache[order] = data["data"][order]
 
     def process_balance_update(self, data: Dict[str, Any]):
         if data["status"] != "OK":
@@ -380,6 +385,7 @@ class ArchaxExchange(ExchangePyBase):
     def process_order_submit_notification(self, data: Dict[str, Any]):
         status = data["status"]
         hbt_order_id = data["data"]["actionRef"]
+        self._order_cache[hbt_order_id] = data["data"]
         if status == "OK":
             self._order_id_map[hbt_order_id] = data["data"]["orderId"]
         else:
@@ -390,12 +396,14 @@ class ArchaxExchange(ExchangePyBase):
         status = data["status"]
         hbt_order_id = data["data"]["actionRef"]
         self._order_id_map[hbt_order_id] = data["data"]["orderId"]
+        self._order_cache[hbt_order_id] = data["data"]
         if status != "OK":
             self.logger().warn(f'Order {hbt_order_id} submit error: {data["data"]["error"]}')
 
     def process_order_cancel_success_notification(self, data: Dict[str, Any]):
         status = data["status"]
         hbt_order_id = data["data"]["actionRef"]
+        self._order_cache[hbt_order_id] = data["data"]
         if status == "OK":
             self._order_cancel_map[hbt_order_id] = True
         else:
@@ -439,7 +447,7 @@ class ArchaxExchange(ExchangePyBase):
         trade_updates = []
 
         if order.exchange_order_id is not None:
-            print(order.exchange_order_id)
+            self.logger().warn(f"Trade update req: {order.exchange_order_id}")
 
             # exchange_order_id = int(order.exchange_order_id)
             # trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=order.trading_pair)
@@ -477,28 +485,19 @@ class ArchaxExchange(ExchangePyBase):
         return trade_updates
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
-        # updated_order_data = await self._api_get(
-        #     path_url=CONSTANTS.ORDER_PATH_URL,
-        #     params={
-        #         "orderLinkId": tracked_order.client_order_id},
-        #     is_auth_required=True)
+        order = self._order_cache.get(tracked_order.exchange_order_id)
+        if order is None:
+            order = self._order_cache.get(tracked_order.client_order_id)
 
-        # new_state = CONSTANTS.ORDER_STATE[updated_order_data["result"]["status"]]
-
-        # order_update = OrderUpdate(
-        #     client_order_id=tracked_order.client_order_id,
-        #     exchange_order_id=str(updated_order_data["result"]["orderId"]),
-        #     trading_pair=tracked_order.trading_pair,
-        #     update_timestamp=int(updated_order_data["result"]["updateTime"]) * 1e-3,
-        #     new_state=new_state,
-        # )
+        if order is None:
+            return OrderUpdate()
 
         order_update = OrderUpdate(
             client_order_id=tracked_order.client_order_id,
-            exchange_order_id="",
+            exchange_order_id=tracked_order.exchange_order_id,
             trading_pair=tracked_order.trading_pair,
-            update_timestamp=1111 * 1e-3,
-            new_state=CONSTANTS.ORDER_STATE["pending"],
+            update_timestamp=time.time() * 1e3,
+            new_state=CONSTANTS.ORDER_STATE[order["orderStatus"]],
         )
 
         return order_update
@@ -514,6 +513,9 @@ class ArchaxExchange(ExchangePyBase):
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
         return 1.0
+
+    def get_last_traded_price(self, trading_pair: str) -> float:
+        return 3359.00
 
     async def _api_request(self,
                            path_url,
