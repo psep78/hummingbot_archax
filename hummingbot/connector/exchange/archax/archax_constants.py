@@ -13,18 +13,18 @@ SIDE_SELL = 1
 ORDER_TYPE_LIMIT = 0
 ORDER_TYPE_MARKET = 1
 
-ORDER_PLACEMENT_TIMEOUT_MS = 3000
-ORDER_CANCEL_TIMEOUT_MS = 3000
+BUY = "buy"
+SELL = "sell"
 
 TIME_IN_FORCE_GTC = "GTC"
 # Base URL
-REST_URLS = {"archax_main": "https://ace-auth.qat.archax.com/api/2.0",
+REST_URLS = {"archax_main": "https://ace-auth.archax.com/api/2.0",
              "archax_testnet": "https://ace-auth.qat.archax.com/api/2.0"}
 
-WSS_V1_PUBLIC_URL = {"archax_main": "wss://ace-auth.qat.archax.com/api/2.0/gateway",
+WSS_V2_PUBLIC_URL = {"archax_main": "wss://ace-auth.archax.com/api/2.0/gateway",
                      "archax_testnet": "wss://ace-auth.qat.archax.com/api/2.0/gateway"}
 
-WSS_PRIVATE_URL = {"archax_main": "wss://ace-auth.qat.archax.com/api/2.0/gateway",
+WSS_PRIVATE_URL = {"archax_main": "wss://ace-auth.archax.com/api/2.0/gateway",
                    "archax_testnet": "wss://ace-auth.qat.archax.com/api/2.0/gateway"}
 
 # Websocket event types
@@ -41,6 +41,7 @@ ORDER_UPDATED_EVENT_TYPE = "order-updated"
 ORDER_CANCELLED_EVENT_TYPE = "order-cancelled"
 ORDER_CANCEL_REJECTED_EVENT_TYPE = "cancel-rejected"
 ORDER_CANCEL_FAILED_EVENT_TYPE = "cancel-failed"
+QUOTES_EVENT_TYPE = "market-quotes"
 
 # Public API endpoints
 LOGIN_PATH_URL = "/login"

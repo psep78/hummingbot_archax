@@ -51,9 +51,9 @@ class ArchaxConfigMap(BaseConnectorConfigMap):
 KEYS = ArchaxConfigMap.construct()
 
 # "archax_testnet"
-OTHER_DOMAINS = []
+OTHER_DOMAINS = ["archax_testnet"]
 OTHER_DOMAINS_PARAMETER = {"archax_testnet": "archax_testnet"}
-OTHER_DOMAINS_EXAMPLE_PAIR = {"archax_testnet": "BTC-USDT"}
+OTHER_DOMAINS_EXAMPLE_PAIR = {"archax_testnet": "BTC-USD"}
 OTHER_DOMAINS_DEFAULT_FEES = {"archax_testnet": DEFAULT_FEES}
 
 

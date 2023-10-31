@@ -1,7 +1,7 @@
 import asyncio
 import time
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import hummingbot.connector.exchange.archax.archax_constants as CONSTANTS
 from hummingbot.connector.exchange.archax import archax_web_utils as web_utils
@@ -14,7 +14,6 @@ from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTr
 from hummingbot.core.web_assistant.connections.data_types import WSJSONRequest
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.core.web_assistant.ws_assistant import WSAssistant
-from hummingbot.logger import HummingbotLogger
 
 if TYPE_CHECKING:
     from hummingbot.connector.exchange.archax.archax_exchange import ArchaxExchange
@@ -22,13 +21,6 @@ if TYPE_CHECKING:
 
 class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
     HEARTBEAT_TIME_INTERVAL = 30.0
-    TRADE_STREAM_ID = 1
-    DIFF_STREAM_ID = 2
-    ONE_HOUR = 60 * 60
-
-    _logger: Optional[HummingbotLogger] = None
-    _trading_pair_symbol_map: Dict[str, Mapping[str, str]] = {}
-    _mapping_initialization_lock = asyncio.Lock()
 
     def __init__(self,
                  auth: ArchaxAuth,
@@ -68,6 +60,7 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
         :return: the response from the exchange (JSON dictionary)
         """
+        # not supported
         return {}
 
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
@@ -89,14 +82,19 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
                 self.logger().error(f"No trading rule for {trading_pair}")
                 continue
 
-            for tx in raw_message["data"][trade]:
-                trade_message: OrderBookMessage = ArchaxOrderBook.trade_message_from_exchange(tx, px_decimal, qty_decimal, {"trading_pair": trading_pair})
+            trade_object = raw_message["data"][trade]
+            if isinstance(trade_object, list):
+                for tx in trade_object:
+                    trade_message: OrderBookMessage = ArchaxOrderBook.trade_message_from_exchange(tx, px_decimal, qty_decimal, {"trading_pair": trading_pair})
+                    message_queue.put_nowait(trade_message)
+            else:
+                trade_message: OrderBookMessage = ArchaxOrderBook.trade_message_from_exchange(trade_object, px_decimal, qty_decimal, {"trading_pair": trading_pair})
                 message_queue.put_nowait(trade_message)
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         for item in raw_message["data"]:
             instrument_data = raw_message["data"][item]
-            instrument_id = instrument_data["instrumentId"]
+            instrument_id = int(item)
             if instrument_id not in self._id_to_pair_mapping:
                 continue
 
@@ -120,6 +118,7 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
         :param ev_loop: the event loop the method will run in
         :param output: a queue to add the created snapshot messages
         """
+        # not supported
         pass
 
     async def listen_for_subscriptions(self):
@@ -131,7 +130,7 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
         while True:
             try:
                 ws: WSAssistant = await self._api_factory.get_ws_assistant()
-                await ws.connect(ws_url=CONSTANTS.WSS_V1_PUBLIC_URL[self._domain])
+                await ws.connect(ws_url=CONSTANTS.WSS_V2_PUBLIC_URL[self._domain])
                 await self._authenticate_connection(ws)
                 self._last_ws_message_sent_timestamp = self._time()
 
@@ -143,7 +142,7 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     except asyncio.TimeoutError:
                         ping_time = self._time()
                         payload = {
-                            "ping": int(ping_time * 1e3)
+                            "action": "ping"
                         }
                         ping_request = WSJSONRequest(payload=payload)
                         await ws.send(request=ping_request)
@@ -208,17 +207,14 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
     async def _process_ws_messages(self, ws: WSAssistant):
         async for ws_response in ws.iter_messages():
             data = ws_response.data
-            self.logger().warn(f"WSS MD message: {data}")
+            self.logger().debug(f"MD data: {data}")
             event_type = data.get("type")
             if event_type == CONSTANTS.LOGIN_EVENT_TYPE:
                 await self._subscribe_channels(ws)
             elif event_type == CONSTANTS.INSTRUMENT_EVENT_TYPE:
                 self._updateInstrumentMapping(data)
             elif event_type == CONSTANTS.DIFF_EVENT_TYPE:
-                if data.get("data"):
-                    self._message_queue[CONSTANTS.DIFF_EVENT_TYPE].put_nowait(data)  # SNAPSHOT_EVENT_TYPE
-                else:
-                    self._message_queue[CONSTANTS.DIFF_EVENT_TYPE].put_nowait(data)
+                self._message_queue[CONSTANTS.DIFF_EVENT_TYPE].put_nowait(data)
             elif event_type == CONSTANTS.TRADE_EVENT_TYPE:
                 self._message_queue[CONSTANTS.TRADE_EVENT_TYPE].put_nowait(data)
 

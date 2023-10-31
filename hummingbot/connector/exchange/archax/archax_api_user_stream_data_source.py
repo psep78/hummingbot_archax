@@ -17,7 +17,7 @@ from hummingbot.logger import HummingbotLogger
 
 class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
 
-    HEARTBEAT_TIME_INTERVAL = 30.0
+    HEARTBEAT_TIME_INTERVAL = 3000.0
 
     _bausds_logger: Optional[HummingbotLogger] = None
 
@@ -32,7 +32,6 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
         super().__init__()
         self._auth: ArchaxAuth = auth
         self._time_synchronizer = time_synchronizer
-        self._last_recv_time: float = 0
         self._domain = domain
         self._throttler = throttler
         self._api_factory = api_factory or web_utils.build_api_factory(
@@ -82,7 +81,7 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
                     except asyncio.TimeoutError:
                         ping_time = self._time()
                         payload = {
-                            "ping": int(ping_time * 1e3)
+                            "action": "ping"
                         }
                         ping_request = WSJSONRequest(payload=payload)
                         await ws.send(request=ping_request)
@@ -108,13 +107,15 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
     async def _process_ws_messages(self, ws: WSAssistant, output: asyncio.Queue):
         async for ws_response in ws.iter_messages():
             data = ws_response.data
+            self.logger().debug(f'US data: {data}')
             evt_type = data["type"]
             if evt_type == CONSTANTS.LOGIN_EVENT_TYPE:
                 if data["status"] != "OK":
                     raise IOError("Private channel authentication failed.")
                 else:
-                    await self.subscribe_balance(ws)
                     await self.subscribe_orders(ws)
+                    await self.subscribe_quotes(ws)
+                    await self.subscribe_balance(ws)
             else:
                 output.put_nowait(data)
 
@@ -122,9 +123,6 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
         async with ArchaxAPIUserStreamDataSource.wss_assistant_lock:
             if self._ws_assistant is None:
                 self._ws_assistant = await self._api_factory.get_ws_assistant()
-                # if self._ws_assistant._connection.connected is False:
-                #     await self._ws_assistant.connect(ws_url=CONSTANTS.WSS_PRIVATE_URL[self._domain])
-                #     await self._authenticate_connection(self._ws_assistant)
             return self._ws_assistant
 
     def _time(self):
@@ -133,6 +131,13 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
     async def subscribe_balance(self, ws: WSAssistant):
         payload = {
             "action": "subscribe-balances"
+        }
+        balance_request: WSJSONRequest = WSJSONRequest(payload=payload)
+        await ws.send(balance_request)
+
+    async def subscribe_quotes(self, ws: WSAssistant):
+        payload = {
+            "action": "subscribe-market-quotes"
         }
         balance_request: WSJSONRequest = WSJSONRequest(payload=payload)
         await ws.send(balance_request)
