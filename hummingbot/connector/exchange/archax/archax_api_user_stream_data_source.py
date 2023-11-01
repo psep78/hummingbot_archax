@@ -100,7 +100,13 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
         Sends the authentication message.
         :param ws: the websocket assistant used to connect to the exchange
         """
-        payload = await self._auth.generate_ws_authentication_message()
+        payload = await self._auth.generate_ws_authentication_message(
+            rest_client=lambda path_url, domain, method, params: web_utils.rest_api_request(
+                path_url=path_url,
+                domain=domain,
+                method=method,
+                params=params)
+        )
         auth_message: WSJSONRequest = WSJSONRequest(payload=payload)
         await ws.send(auth_message)
 

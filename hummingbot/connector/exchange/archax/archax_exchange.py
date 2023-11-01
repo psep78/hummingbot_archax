@@ -71,7 +71,6 @@ class ArchaxExchange(ExchangePyBase):
         return ArchaxAuth(
             archax_email=self._archax_email,
             archax_password=self._archax_password,
-            web_assistants_factory=self._create_web_assistants_factory(),
             domain=self._domain)
 
     @property
@@ -125,10 +124,7 @@ class ArchaxExchange(ExchangePyBase):
         return [OrderType.LIMIT]
 
     def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception):
-        error_description = str(request_exception)
-        is_time_synchronizer_related = ("-1021" in error_description
-                                        and "Timestamp for the request" in error_description)
-        return is_time_synchronizer_related
+        return False
 
     def _is_order_not_found_during_status_update_error(self, status_update_exception: Exception) -> bool:
         # TODO: implement this method correctly for the connector
@@ -376,6 +372,8 @@ class ArchaxExchange(ExchangePyBase):
         for archax_order in data["data"]:
             order_details = data["data"][archax_order]
             self._order_cache[archax_order] = order_details
+            if "actionRef" in order_details:
+                self._order_cache[order_details["actionRef"]] = order_details
             hbt_order_id = self._order_id_map.get(archax_order)
             if hbt_order_id is None:
                 continue
@@ -411,6 +409,8 @@ class ArchaxExchange(ExchangePyBase):
             cached_exec["created"] = exec_details["created"]
         if "commission" in exec_details and int(exec_details["commission"]) > 0:
             cached_exec["commission"] = int(exec_details["commission"])
+        if "tax" in exec_details:
+            cached_exec["tax"] = int(exec_details["tax"])
 
     def process_order_executions(self, order_details: Dict[str, Any], tracked_order: InFlightOrder, on_trade_update):
         for execution in order_details["executions"]:
@@ -426,15 +426,16 @@ class ArchaxExchange(ExchangePyBase):
 
             self.fill_trade_data(exec_details, cached_exec, px_decimal, qty_decimal)
 
-            if len(cached_exec) != 4:
+            if len(cached_exec) != 5:
                 continue
 
             self.logger().debug(f"Trade info: {cached_exec}")
             _, quote = split_hb_trading_pair(tracked_order.trading_pair)
+            total_fee = (Decimal(cached_exec["commission"]) + Decimal(cached_exec["tax"])) / px_decimal
             fee = TradeFeeBase.new_spot_fee(
                 fee_schema=self.trade_fee_schema(),
                 trade_type=tracked_order.trade_type,
-                flat_fees=[TokenAmount(amount=cached_exec["commission"], token=quote)],
+                flat_fees=[TokenAmount(amount=total_fee, token=quote)],
             )
             trade_update = TradeUpdate(
                 trade_id=str(execution),
@@ -540,10 +541,13 @@ class ArchaxExchange(ExchangePyBase):
         while self._order_cache_updated is False:
             await self._sleep(0.1)
 
+        self.logger().debug(f"Trade update order cache: {self._order_cache}")
+
+        self.logger().debug(f"Trade update req: {order.client_order_id} / {order.exchange_order_id}")
+
         if order.exchange_order_id is not None:
-            self.logger().info(f"Trade update req: {order.exchange_order_id}")
             order_details = self._order_cache.get(order.exchange_order_id)
-            if "executions" in order_details:
+            if order_details is not None and "executions" in order_details:
                 self.process_order_executions(order_details, order, on_trade_update=lambda trade_update: trade_updates.append(trade_update))
 
         return trade_updates
@@ -551,6 +555,9 @@ class ArchaxExchange(ExchangePyBase):
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
         while self._order_cache_updated is False:
             await self._sleep(0.1)
+
+        self.logger().debug(f"Req order: order cache: {self._order_cache}")
+        self.logger().debug(f"Req order status: {tracked_order.client_order_id} / {tracked_order.exchange_order_id}")
 
         order = self._order_cache.get(tracked_order.exchange_order_id)
         if order is None:

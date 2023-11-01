@@ -160,7 +160,13 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
     async def _authenticate_connection(self, ws: WSAssistant):
         try:
-            payload = await self._auth.generate_ws_authentication_message()
+            payload = await self._auth.generate_ws_authentication_message(
+                rest_client=lambda path_url, domain, method, params: web_utils.rest_api_request(
+                    path_url=path_url,
+                    domain=domain,
+                    method=method,
+                    params=params)
+            )
             auth_message: WSJSONRequest = WSJSONRequest(payload=payload)
             await ws.send(auth_message)
         except asyncio.CancelledError:

@@ -106,6 +106,39 @@ async def api_request(path: str,
         return await response.json()
 
 
+async def rest_api_request(path_url, domain: str, method: RESTMethod = RESTMethod.GET, params: Optional[Dict[str, Any]] = None, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    last_exception = None
+    api_factory = build_api_factory(
+        throttler=create_throttler(),
+        time_synchronizer=TimeSynchronizer(),
+        domain=domain,
+    )
+
+    rest_assistant = await api_factory.get_rest_assistant()
+    url = CONSTANTS.REST_URLS[domain] + path_url
+    local_headers = {
+        "Content-Type": "application/x-www-form-urlencoded"}
+    for _ in range(2):
+        try:
+            request_result = await rest_assistant.execute_request(
+                url=url,
+                params=params,
+                data=data,
+                method=method,
+                is_auth_required=False,
+                return_err=True,
+                headers=local_headers,
+                throttler_limit_id=path_url,
+            )
+            return request_result
+        except IOError as request_exception:
+            last_exception = request_exception
+            raise
+
+    # Failed even after the last retry
+    raise last_exception
+
+
 async def get_current_server_time(throttler: Optional[AsyncThrottler] = None, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> float:
     throttler = throttler or create_throttler()
     api_factory = build_api_factory_without_time_synchronizer_pre_processor(throttler=throttler)
