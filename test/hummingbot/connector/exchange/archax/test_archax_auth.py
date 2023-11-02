@@ -1,112 +1,63 @@
 import asyncio
-import hashlib
-import hmac
-from collections import OrderedDict
-from typing import Any, Awaitable, Dict, Mapping, Optional
+from typing import Awaitable
 from unittest import TestCase
 from unittest.mock import MagicMock
-from urllib.parse import urlencode
 
+import hummingbot.connector.exchange.archax.archax_constants as CONSTANTS
 from hummingbot.connector.exchange.archax.archax_auth import ArchaxAuth
-from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest, WSJSONRequest
+from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 
 
 class ArchaxAuthTests(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.api_key = "testApiKey"
-        self.passphrase = "testPassphrase"
-        self.secret_key = "testSecretKey"
-
-        self.mock_time_provider = MagicMock()
-        self.mock_time_provider.time.return_value = 1000
+        self.archax_email = "testApiKey"
+        self.archax_password = "testPassphrase"
+        self.domain = "domain"
 
         self.auth = ArchaxAuth(
-            api_key=self.api_key,
-            secret_key=self.secret_key,
-            time_provider=self.mock_time_provider,
+            archax_email=self.archax_email,
+            archax_password=self.archax_password,
+            domain=self.domain,
         )
+
+        self.successful_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJwcmltYXJ5T3JnIjoxMjR9.ydkBt9gJegOwq9WnfDoJWWOjVJCeorXAjMJhImJBazI"
 
     def async_run_with_timeout(self, coroutine: Awaitable, timeout: int = 1):
         ret = asyncio.get_event_loop().run_until_complete(asyncio.wait_for(coroutine, timeout))
         return ret
 
-    def test_add_auth_params_to_get_request_without_params(self):
-        request = RESTRequest(
-            method=RESTMethod.GET,
-            url="https://test.url/api/endpoint",
-            is_auth_required=True,
-            throttler_limit_id="/api/endpoint"
-        )
-        params_expected = self._params_expected(request.params)
+    def async_return(self, result):
+        f = asyncio.Future()
+        f.set_result(result)
+        return f
 
-        self.async_run_with_timeout(self.auth.rest_authenticate(request))
-
-        self.assertEqual(params_expected['api_key'], request.params["api_key"])
-        self.assertEqual(params_expected['timestamp'], request.params["timestamp"])
-        self.assertEqual(params_expected['sign'], request.params["sign"])
-
-    def test_add_auth_params_to_get_request_with_params(self):
-        params = {
-            "param_z": "value_param_z",
-            "param_a": "value_param_a"
+    def test_generate_ws_authentication_message_success(self):
+        ret_val = {
+            "status": "OK",
+            "data": {
+                "jwt": self.successful_jwt
+            }
         }
-        request = RESTRequest(
-            method=RESTMethod.GET,
-            url="https://test.url/api/endpoint",
-            params=params,
-            is_auth_required=True,
-            throttler_limit_id="/api/endpoint"
-        )
 
-        params_expected = self._params_expected(request.params)
+        mock = MagicMock(return_value=self.async_return(ret_val))
 
-        self.async_run_with_timeout(self.auth.rest_authenticate(request))
+        auth_message = self.async_run_with_timeout(self.auth.generate_ws_authentication_message(rest_client=lambda path_url, domain, method, params: mock(path_url, domain, method, params)))
+        self.assertEqual(self.successful_jwt, auth_message["token"])
+        self.assertEqual("login", auth_message["action"])
+        self.assertEqual("core", auth_message["service"])
+        mock.assert_called_once_with(CONSTANTS.LOGIN_PATH_URL, self.domain, RESTMethod.POST, {'email': self.archax_email, 'password': self.archax_password})
 
-        self.assertEqual(params_expected['api_key'], request.params["api_key"])
-        self.assertEqual(params_expected['timestamp'], request.params["timestamp"])
-        self.assertEqual(params_expected['sign'], request.params["sign"])
-        self.assertEqual(params_expected['param_z'], request.params["param_z"])
-        self.assertEqual(params_expected['param_a'], request.params["param_a"])
-
-    def test_add_auth_params_to_post_request(self):
-        params = {"param_z": "value_param_z", "param_a": "value_param_a"}
-        request = RESTRequest(
-            method=RESTMethod.POST,
-            url="https://test.url/api/endpoint",
-            data=params,
-            is_auth_required=True,
-            throttler_limit_id="/api/endpoint"
-        )
-        params_auth = self._params_expected(request.params)
-        params_request = self._params_expected(request.data)
-
-        self.async_run_with_timeout(self.auth.rest_authenticate(request))
-        self.assertEqual(params_auth['api_key'], request.params["api_key"])
-        self.assertEqual(params_auth['timestamp'], request.params["timestamp"])
-        self.assertEqual(params_auth['sign'], request.params["sign"])
-        self.assertEqual(params_request['param_z'], request.data["param_z"])
-        self.assertEqual(params_request['param_a'], request.data["param_a"])
-
-    def test_no_auth_added_to_wsrequest(self):
-        payload = {"param1": "value_param_1"}
-        request = WSJSONRequest(payload=payload, is_auth_required=True)
-        self.async_run_with_timeout(self.auth.ws_authenticate(request))
-        self.assertEqual(payload, request.payload)
-
-    def _generate_signature(self, params: Dict[str, Any]) -> str:
-        encoded_params_str = urlencode(params)
-        digest = hmac.new(self.secret_key.encode("utf8"), encoded_params_str.encode("utf8"), hashlib.sha256).hexdigest()
-        return digest
-
-    def _params_expected(self, request_params: Optional[Mapping[str, str]]) -> Dict:
-        request_params = request_params if request_params else {}
-        params = {
-            'timestamp': 1000000,
-            'api_key': self.api_key,
+    def test_generate_ws_authentication_message_login_fail(self):
+        ret_val = {
+            "status": "ERROR",
+            "error": "login failed"
         }
-        params.update(request_params)
-        params = OrderedDict(sorted(params.items(), key=lambda t: t[0]))
-        params['sign'] = self._generate_signature(params=params)
-        return params
+
+        mock = MagicMock(return_value=self.async_return(ret_val))
+
+        auth_message = self.async_run_with_timeout(self.auth.generate_ws_authentication_message(rest_client=lambda path_url, domain, method, params: mock(path_url, domain, method, params)))
+        self.assertEqual("", auth_message["token"])
+        self.assertEqual("login", auth_message["action"])
+        self.assertEqual("core", auth_message["service"])

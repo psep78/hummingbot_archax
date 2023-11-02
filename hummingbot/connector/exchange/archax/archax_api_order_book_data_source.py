@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
-    HEARTBEAT_TIME_INTERVAL = 30.0
+    HEARTBEAT_TIME_INTERVAL = 3000.0
 
     def __init__(self,
                  auth: ArchaxAuth,
@@ -72,9 +72,11 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
             trading_pair = self._id_to_pair_mapping.get(instrument_id)
             if trading_pair is None:
+                self.logger().error(f"trading_pair for {instrument_id} not found")
                 continue
 
             if self._trading_pairs.count(trading_pair) == 0:
+                self.logger().error(f"trading_pair {trading_pair} not subscribed")
                 continue
 
             px_decimal, qty_decimal = self._connector._decimal_map.get(trading_pair)
@@ -138,6 +140,7 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     try:
                         seconds_until_next_ping = (CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL - (
                             self._time() - self._last_ws_message_sent_timestamp))
+                        self.logger().debug(f"Seconds to ping: {seconds_until_next_ping}")
                         await asyncio.wait_for(self._process_ws_messages(ws=ws), timeout=seconds_until_next_ping)
                     except asyncio.TimeoutError:
                         ping_time = self._time()
