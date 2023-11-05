@@ -1,7 +1,7 @@
 import asyncio
 import json
 import unittest
-from typing import Awaitable, Dict
+from typing import Awaitable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aioresponses import aioresponses
@@ -15,7 +15,8 @@ from hummingbot.connector.exchange.archax.archax_exchange import ArchaxExchange
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
-from hummingbot.core.data_type.order_book_message import OrderBookMessage
+from hummingbot.core.data_type.order_book_message import OrderBookMessage, OrderBookMessageType
+from hummingbot.core.web_assistant.connections.data_types import WSResponse
 
 
 class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
@@ -65,7 +66,7 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
 
         self.resume_test_event = asyncio.Event()
 
-        self.connector._set_trading_pair_symbol_map(bidict({self.ex_trading_pair: self.trading_pair}))
+        self.connector._set_trading_pair_symbol_map(bidict({1: self.trading_pair}))
 
     def tearDown(self) -> None:
         self.async_task and self.async_task.cancel()
@@ -79,84 +80,9 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
         return any(record.levelname == log_level and record.getMessage() == message
                    for record in self.log_records)
 
-    def _create_exception_and_unlock_test_with_event(self, exception):
-        self.resume_test_event.set()
-        raise exception
-
     def async_run_with_timeout(self, coroutine: Awaitable, timeout: int = 1):
         ret = self.ev_loop.run_until_complete(asyncio.wait_for(coroutine, timeout))
         return ret
-
-    def get_exchange_rules_mock(self) -> Dict:
-        exchange_rules = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": [
-                {
-                    "name": self.ex_trading_pair,
-                    "alias": self.ex_trading_pair,
-                    "baseCurrency": "COINALPHA",
-                    "quoteCurrency": "HBOT",
-                    "basePrecision": "0.000001",
-                    "quotePrecision": "0.01",
-                    "minTradeQuantity": "0.0001",
-                    "minTradeAmount": "10",
-                    "minPricePrecision": "0.01",
-                    "maxTradeQuantity": "2",
-                    "maxTradeAmount": "200",
-                    "category": 1,
-                    "showStatus": True
-                },
-            ]
-        }
-        return exchange_rules
-
-    # ORDER BOOK SNAPSHOT
-    @staticmethod
-    def _snapshot_response() -> Dict:
-        snapshot = {
-            "ret_code": 0,
-            "ret_msg": None,
-            "result": {
-                "time": 1620886105740,
-                "bids": [
-                    [
-                        "50005.12",
-                        "403.0416"
-                    ]
-                ],
-                "asks": [
-                    [
-                        "50006.34",
-                        "0.2297"
-                    ]
-                ]
-            },
-            "ext_code": None,
-            "ext_info": None
-        }
-        return snapshot
-
-    @staticmethod
-    def _snapshot_response_processed() -> Dict:
-        snapshot_processed = {
-            "time": 1620886105740,
-            "bids": [
-                [
-                    "50005.12",
-                    "403.0416"
-                ]
-            ],
-            "asks": [
-                [
-                    "50006.34",
-                    "0.2297"
-                ]
-            ]
-        }
-        return snapshot_processed
 
     @aioresponses()
     def test_request_order_book_snapshot(self, mock_api):
@@ -164,45 +90,23 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
             coroutine=self.ob_data_source._request_order_book_snapshot(self.trading_pair)
         )
 
-        self.assertEqual(ret, {})  # shallow comparison ok
-
-    # @aioresponses()
-    # def test_get_snapshot_raises(self, mock_api):
-    #     url = web_utils.rest_url(path_url=CONSTANTS.SNAPSHOT_PATH_URL)
-    #     regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-    #     tradingrule_url = web_utils.rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL)
-    #     tradingrule_resp = self.get_exchange_rules_mock()
-    #     mock_api.get(tradingrule_url, body=json.dumps(tradingrule_resp))
-    #     mock_api.get(regex_url, status=500)
-
-    #     with self.assertRaises(IOError):
-    #         self.async_run_with_timeout(
-    #             coroutine=self.ob_data_source._order_book_snapshot(self.trading_pair)
-    #         )
-
-    # @aioresponses()
-    # def test_get_new_order_book(self, mock_api):
-    #     url = web_utils.rest_url(path_url=CONSTANTS.SNAPSHOT_PATH_URL)
-    #     regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-    #     resp = self._snapshot_response()
-    #     mock_api.get(regex_url, body=json.dumps(resp))
-
-    #     ret = self.async_run_with_timeout(coroutine=self.ob_data_source.get_new_order_book(self.trading_pair))
-    #     bid_entries = list(ret.bid_entries())
-    #     ask_entries = list(ret.ask_entries())
-    #     self.assertEqual(1, len(bid_entries))
-    #     self.assertEqual(50005.12, bid_entries[0].price)
-    #     self.assertEqual(403.0416, bid_entries[0].amount)
-    #     self.assertEqual(int(resp["result"]["time"]), bid_entries[0].update_id)
-    #     self.assertEqual(1, len(ask_entries))
-    #     self.assertEqual(50006.34, ask_entries[0].price)
-    #     self.assertEqual(0.2297, ask_entries[0].amount)
-    #     self.assertEqual(int(resp["result"]["time"]), ask_entries[0].update_id)
+        self.assertEqual(ret, {})
 
     def async_return(self, result):
         f = asyncio.Future()
         f.set_result(result)
         return f
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    def test_get_last_traded_prices(self, ws_connect_mock):
+        self.connector._last_prices[self.trading_pair] = 1234.56
+        ltp = self.async_run_with_timeout(coroutine=self.ob_data_source.get_last_traded_prices([self.trading_pair]))
+        self.assertEqual({self.trading_pair: 1234.56}, ltp)
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    def test_order_book_snapshot(self, ws_connect_mock):
+        snapshot = self.async_run_with_timeout(coroutine=self.ob_data_source._order_book_snapshot(self.trading_pair))
+        self.assertEqual(OrderBookMessageType.SNAPSHOT, snapshot.type)
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
     def test_listen_for_subscriptions_subscribes_to_trades_and_depth(self, ws_connect_mock):
@@ -237,6 +141,122 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
 
         self.assertEqual(1, len(sent_subscription_messages))
         self.assertEqual(auth_message, sent_subscription_messages[0])
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    def test_listen_for_subscriptions_subscribes_to_channels(self, ws_connect_mock):
+        self.connector._mapping[1] = self.trading_pair
+
+        ws_connect_mock.send = AsyncMock()
+
+        self.async_run_with_timeout(coroutine=self.ob_data_source._subscribe_channels(ws_connect_mock))
+
+        self.assertEqual(3, ws_connect_mock.send.await_count)
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    def test_process_diff_message(self, ws_connect_mock):
+        self.connector._mapping[1] = self.trading_pair
+
+        market_depth = {
+            "status": "OK",
+            "action": "set-market-depths",
+            "data": {
+                "1": {
+                    "instrumentId": 1,
+                    "buy": {
+                        "1200": 120
+                    },
+                    "sell": {}
+                }
+            },
+            "type": "market-depths",
+            "timestamp": "2021-07-01T05:17:10.691Z"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = market_depth)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+
+        mock_diff_queue = MagicMock()
+
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_diff_queue
+
+        mock_diff_queue.put_nowait = MagicMock()
+
+        self.async_run_with_timeout(coroutine=self.ob_data_source._process_ws_messages(ws_connect_mock))
+
+        mock_diff_queue.put_nowait.assert_called()
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    def test_process_trade_message(self, ws_connect_mock):
+        self.connector._mapping[1] = self.trading_pair
+
+        trade = {
+            "status": "OK",
+            "action": "append-trade-histories/1",
+            "data": {
+                "1": [
+                    {
+                        "amount": "45",
+                        "created": "1619080206756725534",
+                        "price": "9127",
+                        "side": "sell",
+                        "tradeRef": "4"
+                    }
+                ]
+            },
+            "type": "trade-histories",
+            "timestamp": "2021-08-27T15:35:59.147Z"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = trade)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+
+        mock_trade_queue = MagicMock()
+
+        self.ob_data_source._message_queue[CONSTANTS.TRADE_EVENT_TYPE] = mock_trade_queue
+
+        mock_trade_queue.put_nowait = MagicMock()
+
+        self.async_run_with_timeout(coroutine=self.ob_data_source._process_ws_messages(ws_connect_mock))
+
+        mock_trade_queue.put_nowait.assert_called()
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    def test_process_instruments_message(self, ws_connect_mock):
+        self.connector._mapping[1] = self.trading_pair
+
+        instrument_msg = {
+            "status": "OK",
+            "action": "set-instruments",
+            "data": {
+                "4": {
+                    "currency": "USD",
+                    "decimals": 2,
+                    "id": 4,
+                    "priceDecimalPlaces": 2,
+                    "quantityDecimalPlaces": 0,
+                    "symbol": "ETH",
+                    "type": "crypto",
+                }
+            },
+            "type": "instruments",
+            "timestamp": "2021-08-28T15:35:59.147Z"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = instrument_msg)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+
+        self.async_run_with_timeout(coroutine=self.ob_data_source._process_ws_messages(ws_connect_mock))
+
+        self.assertEqual(1, len(self.ob_data_source._id_to_pair_mapping))
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
     @patch("hummingbot.connector.exchange.archax.archax_api_order_book_data_source.ArchaxAPIOrderBookDataSource._time")
@@ -318,19 +338,9 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
 
     def test_listen_for_trades_logs_exception(self):
         incomplete_resp = {
-            "topic": "trade",
-            "params": {
-                "symbol": self.ex_trading_pair,
-                "binary": "false",
-                "symbolName": self.ex_trading_pair
-            },
-            "data": {
-                "v": "564265886622695424",
-                # "t": 1582001735462,
-                "p": "9787.5",
-                "q": "0.195009",
-                "m": True
-            }
+            "status": "OK",
+            "action": "set-trade-histories/1",
+            "timestamp": "2021-08-27T14:39:46.820Z"
         }
 
         mock_queue = AsyncMock()
@@ -350,6 +360,164 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
 
         self.assertTrue(
             self._is_logged("ERROR", "Unexpected error when processing public trade updates from exchange"))
+
+    def test_listen_for_trades_instrument_not_mapped(self):
+        mock_queue = AsyncMock()
+
+        trade_id = "1"
+        timestamp = 1619080206756725504
+
+        trade_event = {
+            "status": "OK",
+            "action": "set-trade-histories/1",
+            "data": {
+                "1": {
+                    "amount": "81",
+                    "created": timestamp,
+                    "price": "9124",
+                    "side": "sell",
+                    "tradeRef": trade_id
+                }
+            },
+            "type": "trade-histories",
+            "timestamp": "2021-08-27T14:39:46.820Z"
+        }
+
+        mock_queue.get.side_effect = [trade_event, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.TRADE_EVENT_TYPE] = mock_queue
+
+        msg_queue: asyncio.Queue = asyncio.Queue()
+
+        try:
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_trades(self.ev_loop, msg_queue)
+            )
+        except asyncio.CancelledError:
+            pass
+
+        timedout = False
+        try:
+            self.async_run_with_timeout(msg_queue.get())
+        except asyncio.exceptions.TimeoutError:
+            timedout = True
+
+        self.assertTrue(timedout)
+
+    def test_listen_for_trades_instrument_not_subscribed(self):
+        mock_queue = AsyncMock()
+
+        trade_id = "1"
+        timestamp = 1619080206756725504
+
+        trade_event = {
+            "status": "OK",
+            "action": "set-trade-histories/2",
+            "data": {
+                "2": {
+                    "amount": "81",
+                    "created": timestamp,
+                    "price": "9124",
+                    "side": "sell",
+                    "tradeRef": trade_id
+                }
+            },
+            "type": "trade-histories",
+            "timestamp": "2021-08-27T14:39:46.820Z"
+        }
+
+        instrument_mapping = {
+            "data": {
+                "1": {
+                    "currency": "HBOT",
+                    "id": 1,
+                    "symbol": "COINALPHA",
+                    "type": "crypto"
+                },
+                "2": {
+                    "currency": "HBOT",
+                    "id": 2,
+                    "symbol": "APP",
+                    "type": "crypto"
+                }
+            }
+        }
+        self.ob_data_source._updateInstrumentMapping(instrument_mapping)
+
+        mock_queue.get.side_effect = [trade_event, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.TRADE_EVENT_TYPE] = mock_queue
+
+        msg_queue: asyncio.Queue = asyncio.Queue()
+
+        try:
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_trades(self.ev_loop, msg_queue)
+            )
+        except asyncio.CancelledError:
+            pass
+
+        timedout = False
+        try:
+            self.async_run_with_timeout(msg_queue.get())
+        except asyncio.exceptions.TimeoutError:
+            timedout = True
+
+        self.assertTrue(timedout)
+
+    def test_listen_for_trades_no_trading_rule(self):
+        mock_queue = AsyncMock()
+
+        trade_id = "1"
+        timestamp = 1619080206756725504
+
+        trade_event = {
+            "status": "OK",
+            "action": "set-trade-histories/1",
+            "data": {
+                "1": {
+                    "amount": "81",
+                    "created": timestamp,
+                    "price": "9124",
+                    "side": "sell",
+                    "tradeRef": trade_id
+                }
+            },
+            "type": "trade-histories",
+            "timestamp": "2021-08-27T14:39:46.820Z"
+        }
+
+        instrument_mapping = {
+            "data": {
+                "1": {
+                    "currency": "HBOT",
+                    "id": 1,
+                    "symbol": "COINALPHA",
+                    "type": "crypto"
+                }
+            }
+        }
+        self.ob_data_source._updateInstrumentMapping(instrument_mapping)
+
+        self.connector._decimal_map = {}
+
+        mock_queue.get.side_effect = [trade_event, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.TRADE_EVENT_TYPE] = mock_queue
+
+        msg_queue: asyncio.Queue = asyncio.Queue()
+
+        try:
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_trades(self.ev_loop, msg_queue)
+            )
+        except asyncio.CancelledError:
+            pass
+
+        timedout = False
+        try:
+            self.async_run_with_timeout(msg_queue.get())
+        except asyncio.exceptions.TimeoutError:
+            timedout = True
+
+        self.assertTrue(timedout)
 
     def test_listen_for_trades_successful(self):
         mock_queue = AsyncMock()
@@ -403,258 +571,352 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
 
         msg: OrderBookMessage = self.async_run_with_timeout(msg_queue.get())
 
-        print(msg)
+        self.assertEqual(OrderBookMessageType.TRADE, msg.type)
 
         self.assertTrue(trade_id, msg.trade_id)
         self.assertTrue(timestamp, msg.timestamp)
         self.assertTrue(self.trading_pair, msg.trading_pair)
 
-    # def test_listen_for_order_book_diffs_cancelled(self):
-    #     mock_queue = AsyncMock()
-    #     mock_queue.get.side_effect = asyncio.CancelledError()
-    #     self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
+    def test_listen_for_trades_successful_list(self):
+        mock_queue = AsyncMock()
 
-    #     msg_queue: asyncio.Queue = asyncio.Queue()
+        trade_id = "1"
+        timestamp = 1619080206756725504
 
-    #     with self.assertRaises(asyncio.CancelledError):
-    #         self.listening_task = self.ev_loop.create_task(
-    #             self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
-    #         )
-    #         self.async_run_with_timeout(self.listening_task)
+        trade_event = {
+            "status": "OK",
+            "action": "set-trade-histories/1",
+            "data": {
+                "1": [{
+                    "amount": "81",
+                    "created": timestamp,
+                    "price": "9124",
+                    "side": "sell",
+                    "tradeRef": trade_id
+                }]
+            },
+            "type": "trade-histories",
+            "timestamp": "2021-08-27T14:39:46.820Z"
+        }
 
-    # def test_listen_for_order_book_diffs_logs_exception(self):
-    #     incomplete_resp = {
-    #         # "symbol": self.ex_trading_pair,
-    #         "symbolName": self.ex_trading_pair,
-    #         "topic": "diffDepth",
-    #         "params": {
-    #             "realtimeInterval": "24h",
-    #             "binary": "false"
-    #         },
-    #         "data": [{
-    #             "e": 301,
-    #             "s": self.ex_trading_pair,
-    #             "t": 1565600357643,
-    #             "v": "112801745_18",
-    #             "b": [
-    #                 ["11371.49", "0.0014"],
-    #                 ["11371.12", "0.2"],
-    #                 ["11369.97", "0.3523"],
-    #                 ["11369.96", "0.5"],
-    #                 ["11369.95", "0.0934"],
-    #                 ["11369.94", "1.6809"],
-    #                 ["11369.6", "0.0047"],
-    #                 ["11369.17", "0.3"],
-    #                 ["11369.16", "0.2"],
-    #                 ["11369.04", "1.3203"]],
-    #             "a": [
-    #                 ["11375.41", "0.0053"],
-    #                 ["11375.42", "0.0043"],
-    #                 ["11375.48", "0.0052"],
-    #                 ["11375.58", "0.0541"],
-    #                 ["11375.7", "0.0386"],
-    #                 ["11375.71", "2"],
-    #                 ["11377", "2.0691"],
-    #                 ["11377.01", "0.0167"],
-    #                 ["11377.12", "1.5"],
-    #                 ["11377.61", "0.3"]
-    #             ],
-    #             "o": 0
-    #         }],
-    #         "f": False,
-    #         "sendTime": 1626253839401,
-    #         "shared": False
-    #     }
+        instrument_mapping = {
+            "data": {
+                "1": {
+                    "currency": "HBOT",
+                    "id": 1,
+                    "symbol": "COINALPHA",
+                    "type": "crypto"
+                }
+            }
+        }
+        self.ob_data_source._updateInstrumentMapping(instrument_mapping)
 
-    #     mock_queue = AsyncMock()
-    #     mock_queue.get.side_effect = [incomplete_resp, asyncio.CancelledError()]
-    #     self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
+        self.connector._decimal_map = {
+            self.trading_pair: (100, 1000000)
+        }
 
-    #     msg_queue: asyncio.Queue = asyncio.Queue()
+        mock_queue.get.side_effect = [trade_event, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.TRADE_EVENT_TYPE] = mock_queue
 
-    #     self.listening_task = self.ev_loop.create_task(
-    #         self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
-    #     )
+        msg_queue: asyncio.Queue = asyncio.Queue()
 
-    #     try:
-    #         self.async_run_with_timeout(self.listening_task)
-    #     except asyncio.CancelledError:
-    #         pass
+        try:
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_trades(self.ev_loop, msg_queue)
+            )
+        except asyncio.CancelledError:
+            pass
 
-    #     self.assertTrue(
-    #         self._is_logged("ERROR", "Unexpected error when processing public order book updates from exchange"))
+        msg: OrderBookMessage = self.async_run_with_timeout(msg_queue.get())
 
-    # def test_listen_for_order_book_diffs_successful(self):
-    #     mock_queue = AsyncMock()
-    #     diff_event = {
-    #         "symbol": self.ex_trading_pair,
-    #         "symbolName": self.ex_trading_pair,
-    #         "topic": "diffDepth",
-    #         "params": {
-    #             "realtimeInterval": "24h",
-    #             "binary": "false"
-    #         },
-    #         "data": [{
-    #             "e": 301,
-    #             "s": self.ex_trading_pair,
-    #             "t": 1565600357643,
-    #             "v": "112801745_18",
-    #             "b": [
-    #                 ["11371.49", "0.0014"],
-    #                 ["11371.12", "0.2"],
-    #                 ["11369.97", "0.3523"],
-    #                 ["11369.96", "0.5"],
-    #                 ["11369.95", "0.0934"],
-    #                 ["11369.94", "1.6809"],
-    #                 ["11369.6", "0.0047"],
-    #                 ["11369.17", "0.3"],
-    #                 ["11369.16", "0.2"],
-    #                 ["11369.04", "1.3203"]],
-    #             "a": [
-    #                 ["11375.41", "0.0053"],
-    #                 ["11375.42", "0.0043"],
-    #                 ["11375.48", "0.0052"],
-    #                 ["11375.58", "0.0541"],
-    #                 ["11375.7", "0.0386"],
-    #                 ["11375.71", "2"],
-    #                 ["11377", "2.0691"],
-    #                 ["11377.01", "0.0167"],
-    #                 ["11377.12", "1.5"],
-    #                 ["11377.61", "0.3"]
-    #             ],
-    #             "o": 0
-    #         }],
-    #         "f": False,
-    #         "sendTime": 1626253839401,
-    #         "shared": False
-    #     }
-    #     mock_queue.get.side_effect = [diff_event, asyncio.CancelledError()]
-    #     self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
+        self.assertEqual(OrderBookMessageType.TRADE, msg.type)
 
-    #     msg_queue: asyncio.Queue = asyncio.Queue()
+        self.assertTrue(trade_id, msg.trade_id)
+        self.assertTrue(timestamp, msg.timestamp)
+        self.assertTrue(self.trading_pair, msg.trading_pair)
 
-    #     try:
-    #         self.listening_task = self.ev_loop.create_task(
-    #             self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
-    #         )
-    #     except asyncio.CancelledError:
-    #         pass
+    def test_listen_for_order_book_diffs_cancelled(self):
+        mock_queue = AsyncMock()
+        mock_queue.get.side_effect = asyncio.CancelledError()
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
 
-    #     msg: OrderBookMessage = self.async_run_with_timeout(msg_queue.get())
+        msg_queue: asyncio.Queue = asyncio.Queue()
 
-    #     self.assertTrue(diff_event["data"][0]["t"], msg.update_id)
+        with self.assertRaises(asyncio.CancelledError):
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
+            )
+            self.async_run_with_timeout(self.listening_task)
 
-    # def test_listen_for_order_book_snapshots_cancelled_when_fetching_snapshot(self):
-    #     mock_queue = AsyncMock()
-    #     mock_queue.get.side_effect = asyncio.CancelledError()
-    #     self.ob_data_source._message_queue[CONSTANTS.SNAPSHOT_EVENT_TYPE] = mock_queue
+    def test_listen_for_order_book_diffs_logs_exception(self):
+        incomplete_resp = {
+            "status": "OK",
+            "action": "set-market-depths",
+            "dat": {
+                "1": {
+                    "buy": {
+                        "1200": 100,
+                        "1300": 50
+                    },
+                    "indicativePrice": "",
+                    "indicativeVolume": "",
+                    "instrumentId": 1,
+                    "sell": {
+                        "1310": 20,
+                        "1320": 50
+                    }
+                }
+            },
+            "timestamp": "2021-07-01T05:17:00.691Z"
+        }
 
-    #     msg_queue: asyncio.Queue = asyncio.Queue()
+        mock_queue = AsyncMock()
+        mock_queue.get.side_effect = [incomplete_resp, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
 
-    #     with self.assertRaises(asyncio.CancelledError):
-    #         self.async_run_with_timeout(
-    #             self.ob_data_source.listen_for_order_book_snapshots(self.ev_loop, msg_queue)
-    #         )
+        msg_queue: asyncio.Queue = asyncio.Queue()
 
-    # @aioresponses()
-    # @patch("hummingbot.core.data_type.order_book_tracker_data_source.OrderBookTrackerDataSource._sleep")
-    # def test_listen_for_order_book_snapshots_log_exception(self, mock_api, sleep_mock):
-    #     mock_queue = AsyncMock()
-    #     mock_queue.get.side_effect = ['ERROR', asyncio.CancelledError]
-    #     self.ob_data_source._message_queue[CONSTANTS.SNAPSHOT_EVENT_TYPE] = mock_queue
+        self.listening_task = self.ev_loop.create_task(
+            self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
+        )
 
-    #     msg_queue: asyncio.Queue = asyncio.Queue()
-    #     sleep_mock.side_effect = [asyncio.CancelledError]
-    #     url = web_utils.rest_url(path_url=CONSTANTS.SNAPSHOT_PATH_URL)
-    #     regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-    #     mock_api.get(regex_url, exception=Exception)
+        try:
+            self.async_run_with_timeout(self.listening_task)
+        except asyncio.CancelledError:
+            pass
 
-    #     try:
-    #         self.async_run_with_timeout(self.ob_data_source.listen_for_order_book_snapshots(self.ev_loop, msg_queue))
-    #     except asyncio.CancelledError:
-    #         pass
+        self.assertTrue(
+            self._is_logged("ERROR", "Unexpected error when processing public order book updates from exchange"))
 
-    #     self.assertTrue(
-    #         self._is_logged("ERROR", "Unexpected error when processing public order book updates from exchange"))
+    def test_listen_for_order_book_diffs_successful(self):
+        mock_queue = AsyncMock()
+        diff_event = {
+            "status": "OK",
+            "action": "set-market-depths",
+            "data": {
+                "1": {
+                    "buy": {
+                        "1200": 100,
+                        "1300": 50
+                    },
+                    "indicativePrice": "",
+                    "indicativeVolume": "",
+                    "instrumentId": 1,
+                    "sell": {
+                        "1310": 20,
+                        "1320": 50
+                    }
+                }
+            },
+            "type": "market-depths",
+            "timestamp": "2021-07-01T05:17:00.691Z"
+        }
 
-    # @aioresponses()
-    # @patch("hummingbot.core.data_type.order_book_tracker_data_source.OrderBookTrackerDataSource._sleep")
-    # def test_listen_for_order_book_snapshots_successful_rest(self, mock_api, _):
-    #     mock_queue = AsyncMock()
-    #     mock_queue.get.side_effect = asyncio.TimeoutError
-    #     self.ob_data_source._message_queue[CONSTANTS.SNAPSHOT_EVENT_TYPE] = mock_queue
+        instrument_mapping = {
+            "data": {
+                "1": {
+                    "currency": "HBOT",
+                    "id": 1,
+                    "symbol": "COINALPHA",
+                    "type": "crypto"
+                }
+            }
+        }
+        self.ob_data_source._updateInstrumentMapping(instrument_mapping)
 
-    #     msg_queue: asyncio.Queue = asyncio.Queue()
-    #     url = web_utils.rest_url(path_url=CONSTANTS.SNAPSHOT_PATH_URL)
-    #     regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-    #     snapshot_data = self._snapshot_response()
-    #     mock_api.get(regex_url, body=json.dumps(snapshot_data))
+        self.connector._decimal_map = {
+            self.trading_pair: (100, 1000000)
+        }
 
-    #     self.listening_task = self.ev_loop.create_task(
-    #         self.ob_data_source.listen_for_order_book_snapshots(self.ev_loop, msg_queue)
-    #     )
+        mock_queue.get.side_effect = [diff_event, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
 
-    #     msg: OrderBookMessage = self.async_run_with_timeout(msg_queue.get())
+        msg_queue: asyncio.Queue = asyncio.Queue()
 
-    #     self.assertEqual(int(snapshot_data["result"]["time"]), msg.update_id)
+        try:
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
+            )
+        except asyncio.CancelledError:
+            pass
 
-    # def test_listen_for_order_book_snapshots_successful_ws(self):
-    #     mock_queue = AsyncMock()
-    #     snapshot_event = {
-    #         "symbol": self.ex_trading_pair,
-    #         "symbolName": self.ex_trading_pair,
-    #         "topic": "diffDepth",
-    #         "params": {
-    #             "realtimeInterval": "24h",
-    #             "binary": "false"
-    #         },
-    #         "data": [{
-    #             "e": 301,
-    #             "s": self.ex_trading_pair,
-    #             "t": 1565600357643,
-    #             "v": "112801745_18",
-    #             "b": [
-    #                 ["11371.49", "0.0014"],
-    #                 ["11371.12", "0.2"],
-    #                 ["11369.97", "0.3523"],
-    #                 ["11369.96", "0.5"],
-    #                 ["11369.95", "0.0934"],
-    #                 ["11369.94", "1.6809"],
-    #                 ["11369.6", "0.0047"],
-    #                 ["11369.17", "0.3"],
-    #                 ["11369.16", "0.2"],
-    #                 ["11369.04", "1.3203"]],
-    #             "a": [
-    #                 ["11375.41", "0.0053"],
-    #                 ["11375.42", "0.0043"],
-    #                 ["11375.48", "0.0052"],
-    #                 ["11375.58", "0.0541"],
-    #                 ["11375.7", "0.0386"],
-    #                 ["11375.71", "2"],
-    #                 ["11377", "2.0691"],
-    #                 ["11377.01", "0.0167"],
-    #                 ["11377.12", "1.5"],
-    #                 ["11377.61", "0.3"]
-    #             ],
-    #             "o": 0
-    #         }],
-    #         "f": True,
-    #         "sendTime": 1626253839401,
-    #         "shared": False
-    #     }
-    #     mock_queue.get.side_effect = [snapshot_event, asyncio.CancelledError()]
-    #     self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
+        msg: OrderBookMessage = self.async_run_with_timeout(msg_queue.get())
 
-    #     msg_queue: asyncio.Queue = asyncio.Queue()
+        self.assertEqual(self.trading_pair, msg.trading_pair)
+        self.assertEqual(OrderBookMessageType.DIFF, msg.type)
 
-    #     try:
-    #         self.listening_task = self.ev_loop.create_task(
-    #             self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
-    #         )
-    #     except asyncio.CancelledError:
-    #         pass
+        for bid_zip in zip(msg.bids, [[12.00, 0.0001], [13.00, 0.00005]]):
+            self.assertEqual([bid_zip[0].price, bid_zip[0].amount], bid_zip[1])
 
-    #     msg: OrderBookMessage = self.async_run_with_timeout(msg_queue.get(),
-    #                                                         timeout=6)
+        for bid_zip in zip(msg.asks, [[13.10, 0.00002], [13.20, 0.00005]]):
+            self.assertEqual([bid_zip[0].price, bid_zip[0].amount], bid_zip[1])
 
-    #     self.assertTrue(snapshot_event["data"][0]["t"], msg.update_id)
+    def test_listen_for_order_book_diffs_instrument_not_mapped(self):
+        mock_queue = AsyncMock()
+        diff_event = {
+            "status": "OK",
+            "action": "set-market-depths",
+            "data": {
+                "1": {
+                    "buy": {
+                        "1200": 100,
+                        "1300": 50
+                    },
+                    "indicativePrice": "",
+                    "indicativeVolume": "",
+                    "instrumentId": 1,
+                    "sell": {
+                        "1310": 20,
+                        "1320": 50
+                    }
+                }
+            },
+            "type": "market-depths",
+            "timestamp": "2021-07-01T05:17:00.691Z"
+        }
+
+        mock_queue.get.side_effect = [diff_event, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
+
+        msg_queue: asyncio.Queue = asyncio.Queue()
+
+        try:
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
+            )
+        except asyncio.CancelledError:
+            pass
+
+        timedout = False
+        try:
+            self.async_run_with_timeout(msg_queue.get())
+        except asyncio.exceptions.TimeoutError:
+            timedout = True
+
+        self.assertTrue(timedout)
+
+    def test_listen_for_order_book_diffs_instrument_not_subscribed(self):
+        mock_queue = AsyncMock()
+        diff_event = {
+            "status": "OK",
+            "action": "set-market-depths",
+            "data": {
+                "2": {
+                    "buy": {
+                        "1200": 100,
+                        "1300": 50
+                    },
+                    "indicativePrice": "",
+                    "indicativeVolume": "",
+                    "instrumentId": 2,
+                    "sell": {
+                        "1310": 20,
+                        "1320": 50
+                    }
+                }
+            },
+            "type": "market-depths",
+            "timestamp": "2021-07-01T05:17:00.691Z"
+        }
+
+        instrument_mapping = {
+            "data": {
+                "1": {
+                    "currency": "HBOT",
+                    "id": 1,
+                    "symbol": "COINALPHA",
+                    "type": "crypto"
+                },
+                "2": {
+                    "currency": "HBOT",
+                    "id": 2,
+                    "symbol": "ETH",
+                    "type": "crypto"
+                },
+                "3": {
+                    "currency": "HBOT",
+                    "id": 3,
+                    "symbol": "APP",
+                    "type": "security"
+                }
+            }
+        }
+        self.ob_data_source._updateInstrumentMapping(instrument_mapping)
+
+        mock_queue.get.side_effect = [diff_event, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
+
+        msg_queue: asyncio.Queue = asyncio.Queue()
+
+        try:
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
+            )
+        except asyncio.CancelledError:
+            pass
+
+        timedout = False
+        try:
+            self.async_run_with_timeout(msg_queue.get())
+        except asyncio.exceptions.TimeoutError:
+            timedout = True
+
+        self.assertTrue(timedout)
+
+    def test_listen_for_order_book_diffs_no_trading_rule(self):
+        mock_queue = AsyncMock()
+        diff_event = {
+            "status": "OK",
+            "action": "set-market-depths",
+            "data": {
+                "1": {
+                    "buy": {
+                        "1200": 100,
+                        "1300": 50
+                    },
+                    "indicativePrice": "",
+                    "indicativeVolume": "",
+                    "instrumentId": 1,
+                    "sell": {
+                        "1310": 20,
+                        "1320": 50
+                    }
+                }
+            },
+            "type": "market-depths",
+            "timestamp": "2021-07-01T05:17:00.691Z"
+        }
+
+        instrument_mapping = {
+            "data": {
+                "1": {
+                    "currency": "HBOT",
+                    "id": 1,
+                    "symbol": "COINALPHA",
+                    "type": "crypto"
+                }
+            }
+        }
+        self.ob_data_source._updateInstrumentMapping(instrument_mapping)
+
+        self.connector._decimal_map = {}
+
+        mock_queue.get.side_effect = [diff_event, asyncio.CancelledError()]
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_queue
+
+        msg_queue: asyncio.Queue = asyncio.Queue()
+
+        try:
+            self.listening_task = self.ev_loop.create_task(
+                self.ob_data_source.listen_for_order_book_diffs(self.ev_loop, msg_queue)
+            )
+        except asyncio.CancelledError:
+            pass
+
+        timedout = False
+        try:
+            self.async_run_with_timeout(msg_queue.get())
+        except asyncio.exceptions.TimeoutError:
+            timedout = True
+
+        self.assertTrue(timedout)

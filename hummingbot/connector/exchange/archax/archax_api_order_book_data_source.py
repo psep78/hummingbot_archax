@@ -64,7 +64,7 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
         return {}
 
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
-        return OrderBookMessage(OrderBookMessageType.SNAPSHOT, {"trading_pair": [trading_pair], "update_id": 1, "bids": [], "asks": []}, timestamp=1)
+        return OrderBookMessage(OrderBookMessageType.SNAPSHOT, {"trading_pair": [trading_pair], "update_id": 0, "bids": [], "asks": []}, timestamp=0)
 
     async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         for trade in raw_message["data"]:
@@ -76,13 +76,15 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
                 continue
 
             if self._trading_pairs.count(trading_pair) == 0:
-                self.logger().error(f"trading_pair {trading_pair} not subscribed")
+                self.logger().error(f"trading_pair {trading_pair} not found")
                 continue
 
-            px_decimal, qty_decimal = self._connector._decimal_map.get(trading_pair)
-            if px_decimal is None or qty_decimal is None:
+            decimals = self._connector._decimal_map.get(trading_pair)
+            if decimals is None:
                 self.logger().error(f"No trading rule for {trading_pair}")
                 continue
+
+            px_decimal, qty_decimal = decimals
 
             trade_object = raw_message["data"][trade]
             if isinstance(trade_object, list):
@@ -98,16 +100,19 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
             instrument_data = raw_message["data"][item]
             instrument_id = int(item)
             if instrument_id not in self._id_to_pair_mapping:
+                self.logger().error(f"trading_pair for {instrument_id} not found")
                 continue
 
             trading_pair = self._id_to_pair_mapping[instrument_id]
             if self._trading_pairs.count(trading_pair) == 0:
                 continue
 
-            px_decimal, qty_decimal = self._connector._decimal_map.get(trading_pair)
-            if px_decimal is None or qty_decimal is None:
+            decimals = self._connector._decimal_map.get(trading_pair)
+            if decimals is None:
                 self.logger().error(f"No trading rule for {trading_pair}")
                 continue
+
+            px_decimal, qty_decimal = decimals
 
             order_book_message: OrderBookMessage = ArchaxOrderBook.diff_message_from_exchange(instrument_data, px_decimal, qty_decimal, time.time() * 1e3, {"trading_pair": trading_pair})
             message_queue.put_nowait(order_book_message)

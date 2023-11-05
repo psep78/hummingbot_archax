@@ -1,6 +1,4 @@
 import asyncio
-import hashlib
-import hmac
 import json
 import unittest
 from typing import Awaitable, Optional
@@ -8,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from hummingbot.connector.exchange.archax import archax_constants as CONSTANTS, archax_web_utils as web_utils
 from hummingbot.connector.exchange.archax.archax_api_user_stream_data_source import ArchaxAPIUserStreamDataSource
-from hummingbot.connector.exchange.archax.archax_auth import ArchaxAuth
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 
@@ -35,16 +32,11 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
         self.log_records = []
         self.listening_task: Optional[asyncio.Task] = None
         self.mocking_assistant = NetworkMockingAssistant()
+        self.auth = MagicMock()
 
         self.throttler = AsyncThrottler(CONSTANTS.RATE_LIMITS)
         self.mock_time_provider = MagicMock()
         self.mock_time_provider.time.return_value = 1000
-        # self.time_synchronizer = TimeSynchronizer()
-        # self.time_synchronizer.add_time_offset_ms_sample(0)
-        self.auth = ArchaxAuth(
-            self.api_key,
-            self.api_secret_key,
-            time_provider=self.mock_time_provider)
 
         self.api_factory = web_utils.build_api_factory(
             throttler=self.throttler,
@@ -76,6 +68,11 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
         ret = self.ev_loop.run_until_complete(asyncio.wait_for(coroutine, timeout))
         return ret
 
+    def async_return(self, result):
+        f = asyncio.Future()
+        f.set_result(result)
+        return f
+
     def test_last_recv_time(self):
         # Initial last_recv_time
         self.assertEqual(0, self.data_source.last_recv_time)
@@ -87,17 +84,31 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
     @patch("hummingbot.connector.exchange.archax.archax_auth.ArchaxAuth._time")
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
     def test_listen_for_user_stream_auth(self, ws_connect_mock, auth_time_mock):
-        auth_time_mock.side_effect = [1000]
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
 
-        result_auth = {'auth': 'success', 'userId': 24068148}
+        auth_response = {
+            "action": "user-login-success",
+            "data": [],
+            "description": "Authorisation successful",
+            "status": "OK",
+            "type": "user-login"
+        }
+
         self.mocking_assistant.add_websocket_aiohttp_message(
             websocket_mock=ws_connect_mock.return_value,
-            message=json.dumps(result_auth))
+            message=json.dumps(auth_response))
+
+        auth_message = {
+            "action": "login",
+            "service": "core",
+            "token": "jwt"
+        }
 
         output_queue = asyncio.Queue()
 
-        self.listening_task = self.ev_loop.create_task(self.data_source.listen_for_user_stream(output=output_queue))
+        self.auth.generate_ws_authentication_message = MagicMock(return_value=self.async_return(auth_message))
+
+        self.listening_task = self.ev_loop.create_task(self.data_source.listen_for_user_stream(output_queue))
 
         self.mocking_assistant.run_until_all_aiohttp_messages_delivered(ws_connect_mock.return_value)
 
@@ -105,58 +116,24 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
             websocket_mock=ws_connect_mock.return_value)
 
         self.assertEqual(1, len(sent_subscription_messages))
-
-        expires = int((1000 + 10) * 1000)
-        _val = f'GET/realtime{expires}'
-        signature = hmac.new(self.api_secret_key.encode("utf8"),
-                             _val.encode("utf8"), hashlib.sha256).hexdigest()
-        auth_subscription = {
-            "op": "auth",
-            "args": [self.api_key, expires, signature]
-        }
-
-        self.assertEqual(auth_subscription, sent_subscription_messages[0])
+        self.assertEqual(auth_message, sent_subscription_messages[0])
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
     def test_listen_for_user_stream_does_not_queue_pong_payload(self, mock_ws):
-
         mock_pong = {
             "pong": "1545910590801"
         }
+
+        auth_message = {
+            "action": "login",
+            "service": "core",
+            "token": "jwt"
+        }
+
+        self.auth.generate_ws_authentication_message = MagicMock(return_value=self.async_return(auth_message))
+
         mock_ws.return_value = self.mocking_assistant.create_websocket_mock()
         self.mocking_assistant.add_websocket_aiohttp_message(mock_ws.return_value, json.dumps(mock_pong))
-
-        msg_queue = asyncio.Queue()
-        self.listening_task = self.ev_loop.create_task(
-            self.data_source.listen_for_user_stream(msg_queue)
-        )
-
-        self.mocking_assistant.run_until_all_aiohttp_messages_delivered(mock_ws.return_value)
-
-        self.assertEqual(0, msg_queue.qsize())
-
-    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    def test_listen_for_user_stream_does_not_queue_ticket_info(self, mock_ws):
-
-        ticket_info = [
-            {
-                "e": "ticketInfo",
-                "E": "1621912542359",
-                "s": "BTCUSDT",
-                "q": "0.001639",
-                "t": "1621912542314",
-                "p": "61000.0",
-                "T": "899062000267837441",
-                "o": "899048013515737344",
-                "c": "1621910874883",
-                "O": "899062000118679808",
-                "a": "10043",
-                "A": "10024",
-                "m": True
-            }
-        ]
-        mock_ws.return_value = self.mocking_assistant.create_websocket_mock()
-        self.mocking_assistant.add_websocket_aiohttp_message(mock_ws.return_value, json.dumps(ticket_info))
 
         msg_queue = asyncio.Queue()
         self.listening_task = self.ev_loop.create_task(
@@ -179,6 +156,14 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
             message=json.dumps(result_auth))
 
         output_queue = asyncio.Queue()
+
+        auth_message = {
+            "action": "login",
+            "service": "core",
+            "token": "jwt"
+        }
+
+        self.auth.generate_ws_authentication_message = MagicMock(return_value=self.async_return(auth_message))
 
         self.listening_task = self.ev_loop.create_task(self.data_source.listen_for_user_stream(output=output_queue))
 
@@ -218,17 +203,31 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
             time_mock,
             ws_connect_mock):
 
-        time_mock.side_effect = [1000, 1100, 1101, 1102]  # Simulate first ping interval is already due
+        time_mock.side_effect = [1000, 1000 + CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL, 1001 + CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL, 1002 + CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL]  # Simulate first ping interval is already due
 
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
 
-        result_auth = {'auth': 'success', 'userId': 24068148}
+        auth_response = {
+            "action": "user-login-success",
+            "data": [],
+            "description": "Authorisation successful",
+            "status": "OK",
+            "type": "user-login"
+        }
 
         self.mocking_assistant.add_websocket_aiohttp_message(
             websocket_mock=ws_connect_mock.return_value,
-            message=json.dumps(result_auth))
+            message=json.dumps(auth_response))
+
+        auth_message = {
+            "action": "login",
+            "service": "core",
+            "token": "jwt"
+        }
 
         output_queue = asyncio.Queue()
+
+        self.auth.generate_ws_authentication_message = MagicMock(return_value=self.async_return(auth_message))
 
         self.listening_task = self.ev_loop.create_task(self.data_source.listen_for_user_stream(output=output_queue))
 
@@ -238,6 +237,6 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
             websocket_mock=ws_connect_mock.return_value)
 
         expected_ping_message = {
-            "ping": 1101 * 1e3,
+            "action": "ping",
         }
         self.assertEqual(expected_ping_message, sent_messages[-1])
