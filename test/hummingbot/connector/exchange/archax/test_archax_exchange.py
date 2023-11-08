@@ -4,10 +4,11 @@ import re
 import unittest
 from decimal import Decimal
 from typing import Awaitable, Dict, NamedTuple, Optional
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 from aioresponses import aioresponses
 from bidict import bidict
+from dateutil.parser import isoparse
 
 from hummingbot.client.config.client_config_map import ClientConfigMap
 from hummingbot.client.config.config_helpers import ClientConfigAdapter
@@ -15,22 +16,14 @@ from hummingbot.connector.exchange.archax import archax_constants as CONSTANTS, 
 from hummingbot.connector.exchange.archax.archax_api_order_book_data_source import ArchaxAPIOrderBookDataSource
 from hummingbot.connector.exchange.archax.archax_exchange import ArchaxExchange
 from hummingbot.connector.trading_rule import TradingRule
-from hummingbot.connector.utils import get_new_client_order_id
-from hummingbot.core.data_type.cancellation_result import CancellationResult
+from hummingbot.connector.utils import combine_to_hb_trading_pair, get_new_client_order_id
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.data_type.trade_fee import TokenAmount
 from hummingbot.core.event.event_logger import EventLogger
-from hummingbot.core.event.events import (
-    BuyOrderCompletedEvent,
-    BuyOrderCreatedEvent,
-    MarketEvent,
-    MarketOrderFailureEvent,
-    OrderCancelledEvent,
-    OrderFilledEvent,
-    SellOrderCreatedEvent,
-)
+from hummingbot.core.event.events import BuyOrderCompletedEvent, MarketEvent, OrderCancelledEvent, OrderFilledEvent
 from hummingbot.core.network_iterator import NetworkStatus
+from hummingbot.core.web_assistant.connections.data_types import WSJSONRequest
 
 
 class TestArchaxExchange(unittest.TestCase):
@@ -116,28 +109,39 @@ class TestArchaxExchange(unittest.TestCase):
 
     def get_exchange_rules_mock(self) -> Dict:
         exchange_rules = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": [
+            "status": "OK",
+            "data": [
                 {
-                    "name": self.ex_trading_pair,
-                    "alias": self.ex_trading_pair,
-                    "baseCurrency": "COINALPHA",
-                    "quoteCurrency": "USDT",
-                    "basePrecision": "0.000001",
-                    "quotePrecision": "0.01",
-                    "minTradeQuantity": "0.0001",
-                    "minTradeAmount": "10",
-                    "minPricePrecision": "0.01",
-                    "maxTradeQuantity": "2",
-                    "maxTradeAmount": "200",
-                    "category": 1,
-                    "showStatus": True
-                },
-            ]
+                    "id": 6,
+                    "name": "COINALPHA",
+                    "symbol": "COINALPHA",
+                    "currency": "USDT",
+                    "description": "COINALPHA-USDT trading pair",
+                    "status": "Trading",
+                    "type": "crypto",
+                    "quantityDecimalPlaces": 6,
+                    "priceDecimalPlaces": 2,
+                    "initialPrice": "1000",
+                    "minimumOrderValue": "10",
+                    "tickSize": "0.01"
+                }, {
+                    "id": 11,
+                    "name": "APP",
+                    "symbol": "APP",
+                    "currency": "USD",
+                    "description": "APP-USD trading pair",
+                    "status": "Trading",
+                    "type": "security",
+                    "quantityDecimalPlaces": 6,
+                    "priceDecimalPlaces": 2,
+                    "initialPrice": "1000",
+                    "minimumOrderValue": "10",
+                    "tickSize": "0.01"
+                }
+            ],
+            "timestamp": "2023-10-24T08:47:37.221Z"
         }
+
         return exchange_rules
 
     def _simulate_trading_rules_initialized(self):
@@ -160,21 +164,19 @@ class TestArchaxExchange(unittest.TestCase):
 
     def test_supported_order_types(self):
         supported_types = self.exchange.supported_order_types()
-        self.assertIn(OrderType.MARKET, supported_types)
+        self.assertNotIn(OrderType.MARKET, supported_types)
         self.assertIn(OrderType.LIMIT, supported_types)
-        self.assertIn(OrderType.LIMIT_MAKER, supported_types)
+        self.assertNotIn(OrderType.LIMIT_MAKER, supported_types)
 
     @aioresponses()
     def test_check_network_success(self, mock_api):
         url = web_utils.rest_url(CONSTANTS.SERVER_TIME_PATH_URL)
         resp = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "serverTime": 1625799317787
-            }
+            "status": "OK",
+            "data": {
+                "message": "Health check: up and running!"
+            },
+            "timestamp": "2023-11-05T16:50:34.142Z"
         }
         mock_api.get(url, body=json.dumps(resp))
 
@@ -219,20 +221,22 @@ class TestArchaxExchange(unittest.TestCase):
 
         url = web_utils.rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL)
         exchange_rules = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": [
+            "status": "OK",
+            "data": [
                 {
-                    "name": self.ex_trading_pair,
-                    "alias": self.ex_trading_pair,
-                    "baseCurrency": "COINALPHA",
-                    "quoteCurrency": "USDT",
-                    "maxTradeAmount": "200",
-                    "category": 1
+                    "id": 6,
+                    "name": "COINALPHA",
+                    "symbol": "COINALPHA",
+                    "currency": "USDT",
+                    "description": "COINALPHA-USDT trading pair",
+                    "status": "Trading",
+                    "type": "crypto",
+                    "quantityDecimalPlaces": 0,
+                    "priceDecimalPlaces": 0,
+                    "initialPrice": "1000",
                 },
-            ]
+            ],
+            "timestamp": "2023-10-24T08:47:37.221Z"
         }
         mock_api.get(url, body=json.dumps(exchange_rules))
 
@@ -240,7 +244,7 @@ class TestArchaxExchange(unittest.TestCase):
 
         self.assertEqual(0, len(self.exchange._trading_rules))
         self.assertTrue(
-            self._is_logged("ERROR", f"Error parsing the trading pair rule {self.ex_trading_pair}. Skipping.")
+            self._is_logged("ERROR", f"Error parsing the trading pair rule {self.trading_pair}. Skipping.")
         )
 
     def test_initial_status_dict(self):
@@ -361,69 +365,26 @@ class TestArchaxExchange(unittest.TestCase):
     @aioresponses()
     def test_create_limit_order_successfully(self, mock_api):
         self._simulate_trading_rules_initialized()
-        request_sent_event = asyncio.Event()
-        self.exchange._set_current_timestamp(1640780000)
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
 
-        creation_response = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "accountId": "1",
-                "symbol": self.ex_trading_pair,
-                "symbolName": self.ex_trading_pair,
-                "orderLinkId": "162073788655749",
-                "orderId": "889208273689997824",
-                "transactTime": "1620737886573",
-                "price": "20000",
-                "origQty": "10",
-                "executedQty": "0",
-                "status": "NEW",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "side": "BUY"
-            }
-        }
-        tradingrule_url = web_utils.rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL)
-        resp = self.get_exchange_rules_mock()
-        mock_api.get(tradingrule_url, body=json.dumps(resp))
-        mock_api.post(regex_url,
-                      body=json.dumps(creation_response),
-                      callback=lambda *args, **kwargs: request_sent_event.set())
+        self.exchange._user_stream = AsyncMock()
+        self.exchange._user_stream._get_ws_assistant = AsyncMock()
+        self.exchange._user_stream._get_ws_assistant.return_value = mock_api
+        mock_api.send = AsyncMock()
 
-        self.test_task = asyncio.get_event_loop().create_task(
+        self.exchange._mapping[1] = combine_to_hb_trading_pair(base="COINALPHA", quote="USDT")
+        self.exchange._set_trading_pair_symbol_map(self.exchange._mapping)
+
+        self.async_run_with_timeout(
             self.exchange._create_order(trade_type=TradeType.BUY,
                                         order_id="OID1",
                                         trading_pair=self.trading_pair,
                                         amount=Decimal("100"),
                                         order_type=OrderType.LIMIT,
                                         price=Decimal("10000")))
-        self.async_run_with_timeout(request_sent_event.wait())
 
-        order_request = next(((key, value) for key, value in mock_api.requests.items()
-                              if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(order_request[1][0])
-        request_params = order_request[1][0].kwargs["params"]
-        self.assertEqual(self.ex_trading_pair, request_params["symbol"])
-        self.assertEqual("BUY", request_params["side"])
-        self.assertEqual("LIMIT", request_params["type"])
-        self.assertEqual(Decimal("100"), Decimal(request_params["qty"]))
-        self.assertEqual(Decimal("10000"), Decimal(request_params["price"]))
-        self.assertEqual("OID1", request_params["orderLinkId"])
-
-        self.assertIn("OID1", self.exchange.in_flight_orders)
-        create_event: BuyOrderCreatedEvent = self.buy_order_created_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, create_event.timestamp)
-        self.assertEqual(self.trading_pair, create_event.trading_pair)
-        self.assertEqual(OrderType.LIMIT, create_event.type)
-        self.assertEqual(Decimal("100"), create_event.amount)
-        self.assertEqual(Decimal("10000"), create_event.price)
-        self.assertEqual("OID1", create_event.order_id)
-        self.assertEqual(creation_response["result"]["orderId"], create_event.exchange_order_id)
-
+        mock_api.send.assert_awaited_once()
+        calls = [call(WSJSONRequest(payload={'action': 'order-submit', 'data': {'actionRef': 'OID1', 'instrumentId': '1', 'limitPrice': '10000.0000', 'orderType': 0, 'quantity': '100.000000', 'side': 0, 'organisationId': 0}}))]
+        mock_api.send.assert_has_calls(calls, any_order=True)
         self.assertTrue(
             self._is_logged(
                 "INFO",
@@ -432,233 +393,26 @@ class TestArchaxExchange(unittest.TestCase):
         )
 
     @aioresponses()
-    def test_create_limit_maker_order_successfully(self, mock_api):
-        self._simulate_trading_rules_initialized()
-        request_sent_event = asyncio.Event()
-        self.exchange._set_current_timestamp(1640780000)
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-
-        creation_response = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "accountId": "1",
-                "symbol": self.ex_trading_pair,
-                "symbolName": self.ex_trading_pair,
-                "orderLinkId": "162073788655749",
-                "orderId": "889208273689997824",
-                "transactTime": "1620737886573",
-                "price": "20000",
-                "origQty": "10",
-                "executedQty": "0",
-                "status": "NEW",
-                "timeInForce": "GTC",
-                "type": "LIMIT_MAKER",
-                "side": "BUY"
-            }
-        }
-
-        tradingrule_url = web_utils.rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL)
-        resp = self.get_exchange_rules_mock()
-        mock_api.get(tradingrule_url, body=json.dumps(resp))
-        mock_api.post(regex_url,
-                      body=json.dumps(creation_response),
-                      callback=lambda *args, **kwargs: request_sent_event.set())
-
-        self.test_task = asyncio.get_event_loop().create_task(
-            self.exchange._create_order(trade_type=TradeType.BUY,
-                                        order_id="OID1",
-                                        trading_pair=self.trading_pair,
-                                        amount=Decimal("100"),
-                                        order_type=OrderType.LIMIT_MAKER,
-                                        price=Decimal("10000")))
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        order_request = next(((key, value) for key, value in mock_api.requests.items()
-                              if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(order_request[1][0])
-        request_data = order_request[1][0].kwargs["params"]
-        self.assertEqual(self.ex_trading_pair, request_data["symbol"])
-        self.assertEqual(TradeType.BUY.name, request_data["side"])
-        self.assertEqual("LIMIT_MAKER", request_data["type"])
-        self.assertEqual(Decimal("100"), Decimal(request_data["qty"]))
-        self.assertEqual(Decimal("10000"), Decimal(request_data["price"]))
-        self.assertEqual("OID1", request_data["orderLinkId"])
-
-        self.assertIn("OID1", self.exchange.in_flight_orders)
-        create_event: BuyOrderCreatedEvent = self.buy_order_created_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, create_event.timestamp)
-        self.assertEqual(self.trading_pair, create_event.trading_pair)
-        self.assertEqual(OrderType.LIMIT_MAKER, create_event.type)
-        self.assertEqual(Decimal("100"), create_event.amount)
-        self.assertEqual(Decimal("10000"), create_event.price)
-        self.assertEqual("OID1", create_event.order_id)
-        self.assertEqual(creation_response["result"]["orderId"], create_event.exchange_order_id)
-
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"Created LIMIT_MAKER BUY order OID1 for {Decimal('100.000000')} {self.trading_pair}."
-            )
-        )
-
-    @aioresponses()
-    @patch("hummingbot.connector.exchange.archax.archax_exchange.ArchaxExchange.get_price")
-    def test_create_market_order_successfully(self, mock_api, get_price_mock):
-        get_price_mock.return_value = Decimal(1000)
-        self._simulate_trading_rules_initialized()
-        request_sent_event = asyncio.Event()
-        self.exchange._set_current_timestamp(1640780000)
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        creation_response = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "accountId": "1",
-                "symbol": self.ex_trading_pair,
-                "symbolName": self.ex_trading_pair,
-                "orderLinkId": "162073788655749",
-                "orderId": "889208273689997824",
-                "transactTime": "1620737886573",
-                "price": "20000",
-                "origQty": "10",
-                "executedQty": "0",
-                "status": "NEW",
-                "timeInForce": "GTC",
-                "type": "MARKET",
-                "side": "SELL"
-            }
-        }
-        tradingrule_url = web_utils.rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL)
-        resp = self.get_exchange_rules_mock()
-        mock_api.get(tradingrule_url, body=json.dumps(resp))
-        mock_api.post(regex_url,
-                      body=json.dumps(creation_response),
-                      callback=lambda *args, **kwargs: request_sent_event.set())
-
-        self.test_task = asyncio.get_event_loop().create_task(
-            self.exchange._create_order(trade_type=TradeType.SELL,
-                                        order_id="OID1",
-                                        trading_pair=self.trading_pair,
-                                        amount=Decimal("100"),
-                                        order_type=OrderType.MARKET))
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        order_request = next(((key, value) for key, value in mock_api.requests.items()
-                              if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(order_request[1][0])
-        request_data = order_request[1][0].kwargs["params"]
-        self.assertEqual(self.ex_trading_pair, request_data["symbol"])
-        self.assertEqual(TradeType.SELL.name, request_data["side"])
-        self.assertEqual("MARKET", request_data["type"])
-        self.assertEqual(Decimal("100"), Decimal(request_data["qty"]))
-        self.assertEqual("OID1", request_data["orderLinkId"])
-        self.assertNotIn("price", request_data)
-
-        self.assertIn("OID1", self.exchange.in_flight_orders)
-        create_event: SellOrderCreatedEvent = self.sell_order_created_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, create_event.timestamp)
-        self.assertEqual(self.trading_pair, create_event.trading_pair)
-        self.assertEqual(OrderType.MARKET, create_event.type)
-        self.assertEqual(Decimal("100"), create_event.amount)
-        self.assertEqual("OID1", create_event.order_id)
-        self.assertEqual(creation_response["result"]["orderId"], create_event.exchange_order_id)
-
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"Created MARKET SELL order OID1 for {Decimal('100.000000')} {self.trading_pair}."
-            )
-        )
-
-    @aioresponses()
-    def test_create_order_fails_and_raises_failure_event(self, mock_api):
-        self._simulate_trading_rules_initialized()
-        request_sent_event = asyncio.Event()
-        self.exchange._set_current_timestamp(1640780000)
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        tradingrule_url = web_utils.rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL)
-        resp = self.get_exchange_rules_mock()
-        mock_api.get(tradingrule_url, body=json.dumps(resp))
-        mock_api.post(regex_url,
-                      status=400,
-                      callback=lambda *args, **kwargs: request_sent_event.set())
-
-        self.test_task = asyncio.get_event_loop().create_task(
-            self.exchange._create_order(trade_type=TradeType.BUY,
-                                        order_id="OID1",
-                                        trading_pair=self.trading_pair,
-                                        amount=Decimal("100"),
-                                        order_type=OrderType.LIMIT,
-                                        price=Decimal("10000")))
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        order_request = next(((key, value) for key, value in mock_api.requests.items()
-                              if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(order_request[1][0])
-
-        self.assertNotIn("OID1", self.exchange.in_flight_orders)
-        self.assertEquals(0, len(self.buy_order_created_logger.event_log))
-        failure_event: MarketOrderFailureEvent = self.order_failure_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, failure_event.timestamp)
-        self.assertEqual(OrderType.LIMIT, failure_event.order_type)
-        self.assertEqual("OID1", failure_event.order_id)
-
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"Order OID1 has failed. Order Update: OrderUpdate(trading_pair='{self.trading_pair}', "
-                f"update_timestamp={self.exchange.current_timestamp}, new_state={repr(OrderState.FAILED)}, "
-                f"client_order_id='OID1', exchange_order_id=None, misc_updates=None)"
-            )
-        )
-
-    @aioresponses()
     def test_create_order_fails_when_trading_rule_error_and_raises_failure_event(self, mock_api):
         self._simulate_trading_rules_initialized()
-        request_sent_event = asyncio.Event()
-        self.exchange._set_current_timestamp(1640780000)
 
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        tradingrule_url = web_utils.rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL)
-        resp = self.get_exchange_rules_mock()
-        mock_api.get(tradingrule_url, body=json.dumps(resp))
-        mock_api.post(regex_url,
-                      status=400,
-                      callback=lambda *args, **kwargs: request_sent_event.set())
+        self.exchange._user_stream = AsyncMock()
+        self.exchange._user_stream._get_ws_assistant = AsyncMock()
+        self.exchange._user_stream._get_ws_assistant.return_value = mock_api
+        mock_api.send = AsyncMock()
 
-        self.test_task = asyncio.get_event_loop().create_task(
+        self.exchange._mapping[1] = combine_to_hb_trading_pair(base="COINALPHA", quote="USDT")
+        self.exchange._set_trading_pair_symbol_map(self.exchange._mapping)
+
+        self.async_run_with_timeout(
             self.exchange._create_order(trade_type=TradeType.BUY,
                                         order_id="OID1",
                                         trading_pair=self.trading_pair,
                                         amount=Decimal("0.0001"),
                                         order_type=OrderType.LIMIT,
-                                        price=Decimal("0.0001")))
-        # The second order is used only to have the event triggered and avoid using timeouts for tests
-        asyncio.get_event_loop().create_task(
-            self.exchange._create_order(trade_type=TradeType.BUY,
-                                        order_id="OID2",
-                                        trading_pair=self.trading_pair,
-                                        amount=Decimal("100"),
-                                        order_type=OrderType.LIMIT,
                                         price=Decimal("10000")))
 
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        self.assertNotIn("OID1", self.exchange.in_flight_orders)
-        self.assertEquals(0, len(self.buy_order_created_logger.event_log))
-        failure_event: MarketOrderFailureEvent = self.order_failure_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, failure_event.timestamp)
-        self.assertEqual(OrderType.LIMIT, failure_event.order_type)
-        self.assertEqual("OID1", failure_event.order_id)
+        mock_api.send.assert_not_awaited()
 
         self.assertTrue(
             self._is_logged(
@@ -679,8 +433,12 @@ class TestArchaxExchange(unittest.TestCase):
 
     @aioresponses()
     def test_cancel_order_successfully(self, mock_api):
-        request_sent_event = asyncio.Event()
-        self.exchange._set_current_timestamp(1640780000)
+        self.exchange._user_stream = AsyncMock()
+        self.exchange._user_stream._get_ws_assistant = AsyncMock()
+        self.exchange._user_stream._get_ws_assistant.return_value = mock_api
+        mock_api._connection = AsyncMock()
+        mock_api._connection.connected = True
+        mock_api.send = AsyncMock()
 
         self.exchange.start_tracking_order(
             order_id="OID1",
@@ -695,56 +453,23 @@ class TestArchaxExchange(unittest.TestCase):
         self.assertIn("OID1", self.exchange.in_flight_orders)
         order = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
+        result = self.async_run_with_timeout(
+            self.exchange._place_cancel(order_id="OID1",
+                                        tracked_order=order))
 
-        response = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "accountId": "10054",
-                "symbol": self.ex_trading_pair,
-                "orderLinkId": "OID1",
-                "orderId": "4",
-                "transactTime": "1620811601728",
-                "price": "10000",
-                "origQty": "100",
-                "executedQty": "0",
-                "status": "CANCELED",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "side": "BUY"
-            }
-        }
-
-        mock_api.delete(regex_url,
-                        body=json.dumps(response),
-                        callback=lambda *args, **kwargs: request_sent_event.set())
-
-        self.exchange.cancel(client_order_id="OID1", trading_pair=self.trading_pair)
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        cancel_request = next(((key, value) for key, value in mock_api.requests.items()
-                               if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(cancel_request[1][0])
-
-        cancel_event: OrderCancelledEvent = self.order_cancelled_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, cancel_event.timestamp)
-        self.assertEqual(order.client_order_id, cancel_event.order_id)
-
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"Successfully canceled order {order.client_order_id}."
-            )
-        )
+        self.assertTrue(result)
+        mock_api.send.assert_awaited_once()
+        calls = [call(WSJSONRequest(payload={'action': 'order-cancel', 'data': {'actionRef': 'OID1c', 'orderId': '4', 'organisationId': 0}}, throttler_limit_id=None, is_auth_required=False))]
+        mock_api.send.assert_has_calls(calls, any_order=True)
 
     @aioresponses()
-    def test_cancel_order_raises_failure_event_when_request_fails(self, mock_api):
-        request_sent_event = asyncio.Event()
-        self.exchange._set_current_timestamp(1640780000)
+    def test_cancel_order_raises_failure_event_when_not_connected(self, mock_api):
+        self.exchange._user_stream = AsyncMock()
+        self.exchange._user_stream._get_ws_assistant = AsyncMock()
+        self.exchange._user_stream._get_ws_assistant.return_value = mock_api
+        mock_api._connection = AsyncMock()
+        mock_api._connection.connected = False
+        mock_api.send = AsyncMock()
 
         self.exchange.start_tracking_order(
             order_id="OID1",
@@ -759,107 +484,12 @@ class TestArchaxExchange(unittest.TestCase):
         self.assertIn("OID1", self.exchange.in_flight_orders)
         order = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
+        result = self.async_run_with_timeout(
+            self.exchange._place_cancel(order_id="OID1",
+                                        tracked_order=order))
 
-        mock_api.delete(regex_url,
-                        status=400,
-                        callback=lambda *args, **kwargs: request_sent_event.set())
-
-        self.exchange.cancel(client_order_id="OID1", trading_pair=self.trading_pair)
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        cancel_request = next(((key, value) for key, value in mock_api.requests.items()
-                               if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(cancel_request[1][0])
-
-        self.assertEquals(0, len(self.order_cancelled_logger.event_log))
-
-        self.assertTrue(
-            self._is_logged(
-                "ERROR",
-                f"Failed to cancel order {order.client_order_id}"
-            )
-        )
-
-    @aioresponses()
-    def test_cancel_two_orders_with_cancel_all_and_one_fails(self, mock_api):
-        self.exchange._set_current_timestamp(1640780000)
-
-        self.exchange.start_tracking_order(
-            order_id="OID1",
-            exchange_order_id="4",
-            trading_pair=self.trading_pair,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("100"),
-            order_type=OrderType.LIMIT,
-        )
-
-        self.assertIn("OID1", self.exchange.in_flight_orders)
-        order1 = self.exchange.in_flight_orders["OID1"]
-
-        self.exchange.start_tracking_order(
-            order_id="OID2",
-            exchange_order_id="5",
-            trading_pair=self.trading_pair,
-            trade_type=TradeType.SELL,
-            price=Decimal("11000"),
-            amount=Decimal("90"),
-            order_type=OrderType.LIMIT,
-        )
-
-        self.assertIn("OID2", self.exchange.in_flight_orders)
-        order2 = self.exchange.in_flight_orders["OID2"]
-
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-
-        response = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "accountId": "10054",
-                "symbol": self.ex_trading_pair,
-                "orderLinkId": order1.client_order_id,
-                "orderId": order1.exchange_order_id,
-                "transactTime": "1620811601728",
-                "price": float(order1.price),
-                "origQty": float(order1.amount),
-                "executedQty": "0",
-                "status": "CANCELED",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "side": "BUY"
-            }
-        }
-
-        mock_api.delete(regex_url, body=json.dumps(response))
-
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-
-        mock_api.delete(regex_url, status=400)
-
-        cancellation_results = self.async_run_with_timeout(self.exchange.cancel_all(10))
-
-        self.assertEqual(2, len(cancellation_results))
-        self.assertEqual(CancellationResult(order1.client_order_id, True), cancellation_results[0])
-        self.assertEqual(CancellationResult(order2.client_order_id, False), cancellation_results[1])
-
-        self.assertEqual(1, len(self.order_cancelled_logger.event_log))
-        cancel_event: OrderCancelledEvent = self.order_cancelled_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, cancel_event.timestamp)
-        self.assertEqual(order1.client_order_id, cancel_event.order_id)
-
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"Successfully canceled order {order1.client_order_id}."
-            )
-        )
+        self.assertFalse(result)
+        mock_api.send.assert_not_awaited()
 
     @aioresponses()
     @patch("hummingbot.connector.time_synchronizer.TimeSynchronizer._current_seconds_counter")
@@ -871,19 +501,18 @@ class TestArchaxExchange(unittest.TestCase):
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
 
         response = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "serverTime": 1625799317787
-            }
+            "status": "OK",
+            "data": {
+                "message": "Health check: up and running!"
+            },
+            "timestamp": "2023-11-06T15:09:23.735Z"
         }
 
         mock_api.get(regex_url, body=json.dumps(response))
 
         self.async_run_with_timeout(self.exchange._update_time_synchronizer())
-        self.assertEqual(response["result"]['serverTime'] * 1e-3, self.exchange._time_synchronizer.time())
+        server_time = int(isoparse(response["timestamp"]).timestamp() * 1e3)
+        self.assertEqual(server_time, int(self.exchange._time_synchronizer.time() * 1e3))
 
     @aioresponses()
     def test_update_time_synchronizer_failure_is_logged(self, mock_api):
@@ -891,8 +520,9 @@ class TestArchaxExchange(unittest.TestCase):
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
 
         response = {
-            "code": "-1",
-            "msg": "error"
+            "status": "ERROR",
+            "data": {
+            }
         }
 
         mock_api.get(regex_url, body=json.dumps(response))
@@ -914,79 +544,390 @@ class TestArchaxExchange(unittest.TestCase):
 
     @aioresponses()
     def test_update_balances(self, mock_api):
-        url = web_utils.rest_url(CONSTANTS.ACCOUNTS_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
 
-        response = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "balances": [
-                    {
-                        "coin": "COINALPHA",
-                        "coinId": "COINALPHA",
-                        "coinName": "COINALPHA",
-                        "total": "15",
-                        "free": "10",
-                        "locked": "0"
-                    },
-                    {
-                        "coin": "USDT",
-                        "coinId": "USDT",
-                        "coinName": "USDT",
-                        "total": "2000",
-                        "free": "2000",
-                        "locked": "0"
-                    }
-                ]
-            }
+        self.exchange._mapping[1] = combine_to_hb_trading_pair(base="COINALPHA", quote="USDT")
+        self.exchange._mapping[2] = combine_to_hb_trading_pair(base="BTC", quote="USD")
+
+        balance_message = {
+            "status": "OK",
+            "action": "set-balances",
+            "data": {
+                "2786123094": {
+                    "available": "5555",
+                    "instrumentId": 1,
+                    "total": "6666"
+                },
+                "2786123095": {
+                    "available": "7777",
+                    "instrumentId": 2,
+                    "total": "8888"
+                },
+                "2786122842": {
+                    "available": "1000180131",
+                    "instrumentId": 3,
+                    "total": "1000180207"
+                }
+            },
+            "type": "balances",
+            "timestamp": "2021-07-01T04:30:06.408Z"
         }
 
-        mock_api.get(regex_url, body=json.dumps(response))
-        self.async_run_with_timeout(self.exchange._update_balances())
+        async def async_generator_side_effect():
+            yield balance_message
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
 
         available_balances = self.exchange.available_balances
         total_balances = self.exchange.get_all_balances()
 
-        self.assertEqual(Decimal("10"), available_balances["COINALPHA"])
-        self.assertEqual(Decimal("2000"), available_balances["USDT"])
-        self.assertEqual(Decimal("15"), total_balances["COINALPHA"])
-        self.assertEqual(Decimal("2000"), total_balances["USDT"])
+        self.assertEqual(Decimal("5555"), available_balances["COINALPHA-USDT"])
+        self.assertEqual(Decimal("7777"), available_balances["BTC-USD"])
+        self.assertEqual(Decimal("6666"), total_balances["COINALPHA-USDT"])
+        self.assertEqual(Decimal("8888"), total_balances["BTC-USD"])
 
-        response = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "balances": [
-                    {
-                        "coin": "COINALPHA",
-                        "coinId": "COINALPHA",
-                        "coinName": "COINALPHA",
-                        "total": "15",
-                        "free": "10",
-                        "locked": "0"
-                    },
-                ]
-            }
+    @aioresponses()
+    def test_update_balances_failure(self, mock_api):
+
+        self.exchange._mapping[1] = combine_to_hb_trading_pair(base="COINALPHA", quote="USDT")
+        self.exchange._mapping[2] = combine_to_hb_trading_pair(base="BTC", quote="USD")
+
+        balance_message = {
+            "status": "ERROR",
+            "action": "set-balances",
+            "data": {
+            },
+            "type": "balances",
+            "timestamp": "2021-07-01T04:30:06.408Z"
         }
 
-        mock_api.get(regex_url, body=json.dumps(response))
-        self.async_run_with_timeout(self.exchange._update_balances())
+        async def async_generator_side_effect():
+            yield balance_message
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
 
         available_balances = self.exchange.available_balances
         total_balances = self.exchange.get_all_balances()
 
-        self.assertNotIn("USDT", available_balances)
-        self.assertNotIn("USDT", total_balances)
-        self.assertEqual(Decimal("10"), available_balances["COINALPHA"])
-        self.assertEqual(Decimal("15"), total_balances["COINALPHA"])
+        self.assertNotIn("COINALPHA-USDT", available_balances)
+        self.assertNotIn("BTC-USD", available_balances)
+        self.assertNotIn("COINALPHA-USDT", total_balances)
+        self.assertNotIn("BTC-USD", total_balances)
+
+    @aioresponses()
+    def test_user_stream_order_submit(self, mock_api):
+
+        submit_message = {
+            "action": "order-submit",
+            "data": {
+                "actionRef": "aassssasss",
+                "instrumentId": "6",
+                "limitPrice": "3359.00",
+                "orderType": 0,
+                "quantity": "0.01",
+                "side": 1,
+                "organisationId": 198
+            }
+        }
+
+        async def async_generator_side_effect():
+            yield submit_message
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertTrue(
+            self._is_logged(
+                "INFO",
+                "Order submitted: {'action': 'order-submit', 'data': {'actionRef': 'aassssasss', 'instrumentId': '6', 'limitPrice': '3359.00', 'orderType': 0, 'quantity': '0.01', 'side': 1, 'organisationId': 198}}"
+            )
+        )
+
+    @aioresponses()
+    def test_user_stream_order_submitted_failure(self, mock_api):
+
+        submit_message = {
+            "status": "ERROR",
+            "action": "order-submitted",
+            "data": {
+                "error": "No instrument selected",
+                "actionRef": "user_reference_1234"
+            },
+            "type": "notifications",
+            "timestamp": "2021-07-07T07:45:04.231Z"
+        }
+
+        async def async_generator_side_effect():
+            yield submit_message
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertIn("user_reference_1234", self.exchange._order_cache)
+
+        self.assertTrue(
+            self._is_logged(
+                "WARNING",
+                "Order user_reference_1234 submit error: No instrument selected"
+            )
+        )
+
+    @aioresponses()
+    def test_user_stream_order_updated(self, mock_api):
+        self.exchange.start_tracking_order(
+            order_id="OID1",
+            exchange_order_id="EOID1",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10000"),
+            amount=Decimal("1"),
+        )
+
+        order: InFlightOrder = self.exchange.in_flight_orders["OID1"]
+
+        submit_message = {
+            "status": "OK",
+            "action": "order-updated",
+            "data": {
+                "actionRef": "OID1",
+                "orderId": "EOID1",
+                "organisationId": 1,
+                "status": "open"
+            },
+            "type": "notifications",
+            "timestamp": "2021-07-07T07:26:45.140Z"
+        }
+
+        async def async_generator_side_effect():
+            yield submit_message
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.assertNotEqual(OrderState.OPEN, order.current_state)
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertEqual(OrderState.OPEN, order.current_state)
+
+    @aioresponses()
+    def test_user_stream_order_rejected(self, mock_api):
+        self.exchange.start_tracking_order(
+            order_id="OID1",
+            exchange_order_id="EOID1",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10000"),
+            amount=Decimal("1"),
+        )
+
+        order: InFlightOrder = self.exchange.in_flight_orders["OID1"]
+
+        submit_message = {
+            "status": "OK",
+            "action": "order-updated",
+            "data": {
+                "actionRef": "OID1",
+                "error": "Dynamic Price Collar",
+                "orderId": "EOID1",
+                "organisationId": 1,
+                "status": "rejected"
+            },
+            "type": "notifications",
+            "timestamp": "2021-07-07T07:26:45.140Z"
+        }
+
+        async def async_generator_side_effect():
+            yield submit_message
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.assertNotEqual(OrderState.FAILED, order.current_state)
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertEqual(OrderState.FAILED, order.current_state)
+
+    @aioresponses()
+    def test_user_stream_market_quotes(self, mock_api):
+        market_quotes = {
+            "status": "OK",
+            "action": "set-market-quotes",
+            "data": {
+                "3": {
+                    "lastPrice": "4327"
+                },
+                "4": {
+                    "avgPrice": "1489"
+                },
+                "5": {
+                    "lastPrice": "22145"
+                }
+            },
+            "type": "market-quotes"
+        }
+
+        async def async_generator_side_effect():
+            yield market_quotes
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.exchange._mapping[3] = self.trading_pair
+        self.exchange._decimal_map[self.trading_pair] = (1, 1)
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertEqual(4327, self.exchange._last_prices[self.trading_pair])
+
+    @aioresponses()
+    def test_user_stream_market_quotes_fail(self, mock_api):
+        market_quotes = {
+            "status": "ERROR",
+            "action": "set-market-quotes",
+            "data": {
+                "3": {
+                    "lastPrice": "4327"
+                }
+            },
+            "type": "market-quotes"
+        }
+
+        async def async_generator_side_effect():
+            yield market_quotes
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.exchange._mapping[3] = self.trading_pair
+        self.exchange._decimal_map[self.trading_pair] = (1, 1)
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertNotIn(self.trading_pair, self.exchange._last_prices)
+
+    @aioresponses()
+    def test_user_stream_market_quotes_failure(self, mock_api):
+        market_quotes = {
+            "status": "OK",
+            "action": "set-market-quotes",
+            "data": {
+                "3": {
+                    "lastPrice": "4327"
+                }
+            }
+        }
+
+        async def async_generator_side_effect():
+            yield market_quotes
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.exchange._mapping[3] = self.trading_pair
+        self.exchange._decimal_map[self.trading_pair] = (1, 1)
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertNotIn(self.trading_pair, self.exchange._last_prices)
 
     @aioresponses()
     def test_update_order_status_when_filled(self, mock_api):
+        self.exchange._set_current_timestamp(1640780000)
+        self.exchange._last_poll_timestamp = (self.exchange.current_timestamp -
+                                              10 - 1)
+
+        self.exchange.start_tracking_order(
+            order_id="OID1",
+            exchange_order_id="EOID1",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("1000"),
+            amount=Decimal("1"),
+        )
+        order: InFlightOrder = self.exchange.in_flight_orders["OID1"]
+
+        order_update = {
+            "status": "OK",
+            "action": "set-orders",
+            "data": {
+                "EOID1": {
+                    "averagePrice": "1000",
+                    "created": "1623217157444",
+                    "commission": "10",
+                    "currency": "EUR",
+                    "decimals": 2,
+                    "executions": {
+                        "1623217158966156": {
+                            "created": "1623217158966",
+                            "commission": "10",
+                            "grossExecutionAmount": "17000",
+                            "price": "1000",
+                            "id": "1623217158966156",
+                            "quantity": "1",
+                            "tax": "0"
+                        }
+                    },
+                    "filledPercent": "100.00",
+                    "filledQty": "1",
+                    "filledStatus": "filled",
+                    "id": "EOID1",
+                    "instrumentId": 24,
+                    "limitPrice": "1000",
+                    "orderStatus": "completed",
+                    "quantity": "1",
+                    "side": "buy",
+                    "symbol": "OASa",
+                    "type": "limit",
+                    "tax": "0",
+                    "userId": 1
+                }
+            },
+            "type": "orders",
+            "timestamp": "2021-07-06T08:04:20.837Z"
+        }
+
+        async def async_generator_side_effect():
+            yield order_update
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.exchange._decimal_map[self.trading_pair] = (1, 1)
+        self.exchange._order_id_map["EOID1"] = "OID1"
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        # Simulate the order has been filled with a TradeUpdate
+        order.completely_filled_event.set()
+        self.async_run_with_timeout(self.exchange._update_order_status())
+        self.async_run_with_timeout(order.wait_until_completely_filled())
+
+        self.assertTrue(order.is_filled)
+        self.assertTrue(order.is_done)
+
+        buy_event: BuyOrderCompletedEvent = self.buy_order_completed_logger.event_log[0]
+        self.assertEqual(self.exchange.current_timestamp, buy_event.timestamp)
+        self.assertEqual(order.client_order_id, buy_event.order_id)
+        self.assertEqual(order.base_asset, buy_event.base_asset)
+        self.assertEqual(order.quote_asset, buy_event.quote_asset)
+        self.assertEqual(Decimal(1), buy_event.base_asset_amount)
+        self.assertEqual(Decimal(1000), buy_event.quote_asset_amount)
+        self.assertEqual(order.order_type, buy_event.order_type)
+        self.assertEqual(order.exchange_order_id, buy_event.exchange_order_id)
+        self.assertNotIn(order.client_order_id, self.exchange.in_flight_orders)
+        self.assertTrue(
+            self._is_logged(
+                "INFO",
+                f"BUY order {order.client_order_id} completely filled."
+            )
+        )
+
+    @aioresponses()
+    def test_update_order_status_when_filled_with_missing_fields(self, mock_api):
         self.exchange._set_current_timestamp(1640780000)
         self.exchange._last_poll_timestamp = (self.exchange.current_timestamp -
                                               10 - 1)
@@ -1002,68 +943,60 @@ class TestArchaxExchange(unittest.TestCase):
         )
         order: InFlightOrder = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-
-        order_status = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "accountId": "1054",
-                "exchangeId": "301",
-                "symbol": self.trading_pair,
-                "symbolName": "ETHUSDT",
-                "orderLinkId": order.client_order_id,
-                "orderId": order.exchange_order_id,
-                "price": "20000",
-                "origQty": "1",
-                "executedQty": "1",
-                "cummulativeQuoteQty": "1",
-                "avgPrice": "1000",
-                "status": "FILLED",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "side": order.trade_type.name,
-                "stopPrice": "0.0",
-                "icebergQty": "0.0",
-                "time": "1620811601728",
-                "updateTime": "1620811601743",
-                "isWorking": True
-            }
+        order_update = {
+            "status": "OK",
+            "action": "set-orders",
+            "data": {
+                "EOID1": {
+                    "averagePrice": "1000",
+                    "created": "1623217157444",
+                    "commission": "10",
+                    "currency": "EUR",
+                    "decimals": 2,
+                    "executions": {
+                        "1623217158966156": {
+                            "grossExecutionAmount": "17000",
+                            "id": "1623217158966156",
+                        }
+                    },
+                    "filledPercent": "100.00",
+                    "filledQty": "17",
+                    "filledStatus": "filled",
+                    "id": "EOID1",
+                    "instrumentId": 24,
+                    "limitPrice": "1000",
+                    "orderStatus": "completed",
+                    "quantity": "17",
+                    "side": "buy",
+                    "symbol": "OASa",
+                    "type": "limit",
+                    "tax": "0",
+                    "userId": 1
+                }
+            },
+            "type": "orders",
+            "timestamp": "2021-07-06T08:04:20.837Z"
         }
 
-        mock_api.get(regex_url, body=json.dumps(order_status))
+        async def async_generator_side_effect():
+            yield order_update
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.exchange._decimal_map[self.trading_pair] = (1, 1)
+        self.exchange._order_id_map["EOID1"] = "OID1"
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
 
         # Simulate the order has been filled with a TradeUpdate
         order.completely_filled_event.set()
         self.async_run_with_timeout(self.exchange._update_order_status())
         self.async_run_with_timeout(order.wait_until_completely_filled())
 
-        order_request = next(((key, value) for key, value in mock_api.requests.items()
-                              if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(order_request[1][0])
-
-        self.assertTrue(order.is_filled)
+        self.assertFalse(order.is_filled)
         self.assertTrue(order.is_done)
 
-        buy_event: BuyOrderCompletedEvent = self.buy_order_completed_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, buy_event.timestamp)
-        self.assertEqual(order.client_order_id, buy_event.order_id)
-        self.assertEqual(order.base_asset, buy_event.base_asset)
-        self.assertEqual(order.quote_asset, buy_event.quote_asset)
-        self.assertEqual(Decimal(0), buy_event.base_asset_amount)
-        self.assertEqual(Decimal(0), buy_event.quote_asset_amount)
-        self.assertEqual(order.order_type, buy_event.order_type)
-        self.assertEqual(order.exchange_order_id, buy_event.exchange_order_id)
-        self.assertNotIn(order.client_order_id, self.exchange.in_flight_orders)
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"BUY order {order.client_order_id} completely filled."
-            )
-        )
+        self.assertEqual(0, len(self.buy_order_completed_logger.event_log))
 
     @aioresponses()
     def test_update_order_status_when_cancelled(self, mock_api):
@@ -1082,45 +1015,25 @@ class TestArchaxExchange(unittest.TestCase):
         )
         order = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-
         order_status = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "accountId": "1054",
-                "exchangeId": "301",
-                "symbol": self.trading_pair,
-                "symbolName": "ETHUSDT",
-                "orderLinkId": order.client_order_id,
-                "orderId": order.exchange_order_id,
-                "price": "10000",
-                "origQty": "1",
-                "executedQty": "1",
-                "cummulativeQuoteQty": "1",
-                "avgPrice": "1000",
-                "status": "CANCELED",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "side": order.trade_type.name,
-                "stopPrice": "0.0",
-                "icebergQty": "0.0",
-                "time": "1620811601728",
-                "updateTime": "1620811601743",
-                "isWorking": True
-            }
+            "status": "OK",
+            "action": "order-cancelled",
+            "data": {
+                "actionRef": "OID1",
+                "orderId": "100234",
+                "organisationId": 1,
+                "status": "cancelled"
+            },
+            "type": "notifications",
+            "timestamp": "2021-07-07T18:59:04.231Z"
         }
 
-        mock_api.get(regex_url, body=json.dumps(order_status))
+        async def async_generator_side_effect():
+            yield order_status
 
-        self.async_run_with_timeout(self.exchange._update_order_status())
+        self.exchange._iter_user_event_queue = async_generator_side_effect
 
-        order_request = next(((key, value) for key, value in mock_api.requests.items()
-                              if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(order_request[1][0])
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
 
         cancel_event: OrderCancelledEvent = self.order_cancelled_logger.event_log[0]
         self.assertEqual(self.exchange.current_timestamp, cancel_event.timestamp)
@@ -1130,6 +1043,52 @@ class TestArchaxExchange(unittest.TestCase):
         self.assertTrue(
             self._is_logged("INFO", f"Successfully canceled order {order.client_order_id}.")
         )
+
+    @aioresponses()
+    def test_not_update_order_status_when_cancel_fail(self, mock_api):
+        self.exchange._set_current_timestamp(1640780000)
+        self.exchange._last_poll_timestamp = (self.exchange.current_timestamp -
+                                              10 - 1)
+        order_status = {
+            "status": "ERROR",
+            "action": "order-cancelled",
+            "data": {
+            },
+            "type": "notifications",
+            "timestamp": "2021-07-07T18:57:04.231Z"
+        }
+
+        async def async_generator_side_effect():
+            yield order_status
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertEqual(0, len(self.order_cancelled_logger.event_log))
+
+    @aioresponses()
+    def test_not_update_order_status_when_cancel_rejected(self, mock_api):
+        self.exchange._set_current_timestamp(1640780000)
+        self.exchange._last_poll_timestamp = (self.exchange.current_timestamp -
+                                              10 - 1)
+        order_status = {
+            "status": "ERROR",
+            "action": "cancel-rejected",
+            "data": {
+            },
+            "type": "notifications",
+            "timestamp": "2021-07-07T18:57:04.231Z"
+        }
+
+        async def async_generator_side_effect():
+            yield order_status
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertEqual(0, len(self.order_cancelled_logger.event_log))
 
     @aioresponses()
     def test_update_order_status_when_order_has_not_changed(self, mock_api):
@@ -1148,48 +1107,47 @@ class TestArchaxExchange(unittest.TestCase):
         )
         order: InFlightOrder = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-
         order_status = {
-            "ret_code": 0,
-            "ret_msg": "",
-            "ext_code": None,
-            "ext_info": None,
-            "result": {
-                "accountId": "1054",
-                "exchangeId": "301",
-                "symbol": self.trading_pair,
-                "symbolName": "ETHUSDT",
-                "orderLinkId": order.client_order_id,
-                "orderId": order.exchange_order_id,
-                "price": "10000",
-                "origQty": "1",
-                "executedQty": "1",
-                "cummulativeQuoteQty": "1",
-                "avgPrice": "1000",
-                "status": "NEW",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "side": order.trade_type.name,
-                "stopPrice": "0.0",
-                "icebergQty": "0.0",
-                "time": "1620811601728",
-                "updateTime": "1620811601743",
-                "isWorking": True
-            }
+            "status": "OK",
+            "action": "set-orders",
+            "data": {
+                "EOID1": {
+                    "averagePrice": "1000",
+                    "created": "1623217157444",
+                    "commission": "10",
+                    "currency": "EUR",
+                    "decimals": 2,
+                    "executions": {
+                    },
+                    "filledPercent": "100.00",
+                    "filledQty": "17",
+                    "filledStatus": "filled",
+                    "id": "EOID1",
+                    "instrumentId": 24,
+                    "limitPrice": "1000",
+                    "orderStatus": "open",
+                    "quantity": "17",
+                    "side": "buy",
+                    "symbol": "OASa",
+                    "type": "limit",
+                    "tax": "0",
+                    "userId": 1
+                }
+            },
+            "type": "orders",
+            "timestamp": "2021-07-01T08:04:40.837Z"
         }
 
-        mock_response = order_status
-        mock_api.get(regex_url, body=json.dumps(mock_response))
+        async def async_generator_side_effect():
+            yield order_status
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
 
         self.assertTrue(order.is_open)
 
         self.async_run_with_timeout(self.exchange._update_order_status())
-
-        order_request = next(((key, value) for key, value in mock_api.requests.items()
-                              if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(order_request[1][0])
 
         self.assertTrue(order.is_open)
         self.assertFalse(order.is_filled)
@@ -1200,6 +1158,8 @@ class TestArchaxExchange(unittest.TestCase):
         self.exchange._set_current_timestamp(1640780000)
         self.exchange._last_poll_timestamp = (self.exchange.current_timestamp -
                                               10 - 1)
+
+        self.exchange._order_cache_updated = True
 
         self.exchange.start_tracking_order(
             order_id="OID1",
@@ -1212,152 +1172,13 @@ class TestArchaxExchange(unittest.TestCase):
         )
         order: InFlightOrder = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.rest_url(CONSTANTS.ORDER_PATH_URL)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-
-        mock_api.get(regex_url, status=404)
-
         self.async_run_with_timeout(self.exchange._update_order_status())
 
-        order_request = next(((key, value) for key, value in mock_api.requests.items()
-                              if key[1].human_repr().startswith(url)))
-        self._validate_auth_credentials_present(order_request[1][0])
-
-        self.assertTrue(order.is_open)
+        self.assertFalse(order.is_open)
         self.assertFalse(order.is_filled)
-        self.assertFalse(order.is_done)
-
-        self.assertEqual(1, self.exchange._order_tracker._order_not_found_records[order.client_order_id])
-
-    def test_user_stream_update_for_new_order_does_not_update_status(self):
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange.start_tracking_order(
-            order_id="OID1",
-            exchange_order_id="EOID1",
-            trading_pair=self.trading_pair,
-            order_type=OrderType.LIMIT,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-        )
-        order = self.exchange.in_flight_orders["OID1"]
-
-        event_message = {
-            "e": "executionReport",
-            "E": "1499405658658",
-            "s": order.trading_pair,
-            "c": order.client_order_id,
-            "S": order.trade_type.name,
-            "o": "LIMIT",
-            "f": "GTC",
-            "q": "1.00000000",
-            "p": "0.10264410",
-            "X": "NEW",
-            "i": order.exchange_order_id,
-            "M": "0",
-            "l": "0.00000000",
-            "z": "0.00000000",
-            "L": "0.00000000",
-            "n": "0",
-            "N": "COINALPHA",
-            "u": True,
-            "w": True,
-            "m": False,
-            "O": "1499405658657",
-            "Z": "473.199",
-            "A": "0",
-            "C": False,
-            "v": "0"
-        }
-
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = [event_message, asyncio.CancelledError]
-        self.exchange._user_stream_tracker._user_stream = mock_queue
-
-        try:
-            self.async_run_with_timeout(self.exchange._user_stream_event_listener())
-        except asyncio.CancelledError:
-            pass
-
-        event: BuyOrderCreatedEvent = self.buy_order_created_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, event.timestamp)
-        self.assertEqual(order.order_type, event.type)
-        self.assertEqual(order.trading_pair, event.trading_pair)
-        self.assertEqual(order.amount, event.amount)
-        self.assertEqual(order.price, event.price)
-        self.assertEqual(order.client_order_id, event.order_id)
-        self.assertEqual(order.exchange_order_id, event.exchange_order_id)
-        self.assertTrue(order.is_open)
-
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"Created {order.order_type.name.upper()} {order.trade_type.name.upper()} order "
-                f"{order.client_order_id} for {order.amount} {order.trading_pair}."
-            )
-        )
-
-    def test_user_stream_update_for_cancelled_order(self):
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange.start_tracking_order(
-            order_id="OID1",
-            exchange_order_id="EOID1",
-            trading_pair=self.trading_pair,
-            order_type=OrderType.LIMIT,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-        )
-        order = self.exchange.in_flight_orders["OID1"]
-
-        event_message = {
-            "e": "executionReport",
-            "E": "1499405658658",
-            "s": order.trading_pair,
-            "c": order.client_order_id,
-            "S": order.trade_type.name,
-            "o": "LIMIT",
-            "f": "GTC",
-            "q": "1.00000000",
-            "p": "0.10264410",
-            "X": "CANCELED",
-            "i": order.exchange_order_id,
-            "M": "0",
-            "l": "0.00000000",
-            "z": "0.00000000",
-            "L": "0.00000000",
-            "n": "0",
-            "N": "COINALPHA",
-            "u": True,
-            "w": True,
-            "m": False,
-            "O": "1499405658657",
-            "Z": "473.199",
-            "A": "0",
-            "C": False,
-            "v": "0"
-        }
-
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = [event_message, asyncio.CancelledError]
-        self.exchange._user_stream_tracker._user_stream = mock_queue
-
-        try:
-            self.async_run_with_timeout(self.exchange._user_stream_event_listener())
-        except asyncio.CancelledError:
-            pass
-
-        cancel_event: OrderCancelledEvent = self.order_cancelled_logger.event_log[0]
-        self.assertEqual(self.exchange.current_timestamp, cancel_event.timestamp)
-        self.assertEqual(order.client_order_id, cancel_event.order_id)
-        self.assertEqual(order.exchange_order_id, cancel_event.exchange_order_id)
-        self.assertNotIn(order.client_order_id, self.exchange.in_flight_orders)
-        self.assertTrue(order.is_cancelled)
         self.assertTrue(order.is_done)
 
-        self.assertTrue(
-            self._is_logged("INFO", f"Successfully canceled order {order.client_order_id}.")
-        )
+        self.assertEqual(0, self.exchange._order_tracker._order_not_found_records[order.client_order_id])
 
     def test_user_stream_update_for_order_partial_fill(self):
         self.exchange._set_current_timestamp(1640780000)
@@ -1372,43 +1193,55 @@ class TestArchaxExchange(unittest.TestCase):
         )
         order = self.exchange.in_flight_orders["OID1"]
 
-        event_message = {
-            "e": "executionReport",
-            "t": "1499405658658",
-            "E": "1499405658658",
-            "s": order.trading_pair,
-            "c": order.client_order_id,
-            "S": order.trade_type.name,
-            "o": "LIMIT",
-            "f": "GTC",
-            "q": order.amount,
-            "p": order.price,
-            "X": "PARTIALLY_FILLED",
-            "i": order.exchange_order_id,
-            "M": "0",
-            "l": "0.50000000",
-            "z": "0.50000000",
-            "L": "0.10250000",
-            "n": "0.003",
-            "N": self.base_asset,
-            "u": True,
-            "w": True,
-            "m": False,
-            "O": "1499405658657",
-            "Z": "473.199",
-            "A": "0",
-            "C": False,
-            "v": "0"
+        order_status = {
+            "status": "OK",
+            "action": "set-orders",
+            "data": {
+                "EOID1": {
+                    "averagePrice": "1000",
+                    "created": "1623217157444",
+                    "commission": "10",
+                    "currency": "EUR",
+                    "decimals": 2,
+                    "executions": {
+                        "2311070010000000968": {
+                            "commission": "1",
+                            "created": "1699361661658",
+                            "grossExecutionAmount": "1100022570",
+                            "id": "2311070010000000968",
+                            "orderId": "1699361661659511",
+                            "price": "10000",
+                            "quantity": "0.5",
+                            "referenceId": "1699361661660377",
+                            "tax": "0"
+                        }
+                    },
+                    "id": "EOID1",
+                    "instrumentId": 24,
+                    "limitPrice": "1000",
+                    "orderStatus": "open",
+                    "filledStatus": "partiallyFilled",
+                    "quantity": "1",
+                    "side": "buy",
+                    "symbol": "OASa",
+                    "type": "limit",
+                    "tax": "0",
+                    "userId": 1
+                }
+            },
+            "type": "orders",
+            "timestamp": "2021-07-06T18:04:40.837Z"
         }
 
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = [event_message, asyncio.CancelledError]
-        self.exchange._user_stream_tracker._user_stream = mock_queue
+        self.exchange._order_id_map["EOID1"] = "OID1"
+        self.exchange._decimal_map[self.trading_pair] = (100, 1000000)
 
-        try:
-            self.async_run_with_timeout(self.exchange._user_stream_event_listener())
-        except asyncio.CancelledError:
-            pass
+        async def async_generator_side_effect():
+            yield order_status
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
 
         self.assertTrue(order.is_open)
         self.assertEqual(OrderState.PARTIALLY_FILLED, order.current_state)
@@ -1419,10 +1252,9 @@ class TestArchaxExchange(unittest.TestCase):
         self.assertEqual(order.trading_pair, fill_event.trading_pair)
         self.assertEqual(order.trade_type, fill_event.trade_type)
         self.assertEqual(order.order_type, fill_event.order_type)
-        self.assertEqual(Decimal(event_message["L"]), fill_event.price)
-        self.assertEqual(Decimal(event_message["l"]), fill_event.amount)
+        self.assertEqual(Decimal(100), fill_event.price)
 
-        self.assertEqual([TokenAmount(amount=Decimal(event_message["n"]), token=(event_message["N"]))],
+        self.assertEqual([TokenAmount(amount=Decimal("0.01"), token=("USDT"))],
                          fill_event.trade_fee.flat_fees)
 
         self.assertEqual(0, len(self.buy_order_completed_logger.event_log))
@@ -1441,63 +1273,60 @@ class TestArchaxExchange(unittest.TestCase):
             order_type=OrderType.LIMIT,
             trade_type=TradeType.BUY,
             price=Decimal("10000"),
-            amount=Decimal("1"),
+            amount=Decimal("0.000001"),
         )
         order = self.exchange.in_flight_orders["OID1"]
 
-        event_message = {
-            "e": "executionReport",
-            "t": "1499405658658",
-            "E": "1499405658658",
-            "s": order.trading_pair,
-            "c": order.client_order_id,
-            "S": order.trade_type.name,
-            "o": "LIMIT",
-            "f": "GTC",
-            "q": order.amount,
-            "p": order.price,
-            "X": "FILLED",
-            "i": order.exchange_order_id,
-            "M": "0",
-            "l": order.amount,
-            "z": "0.50000000",
-            "L": order.price,
-            "n": "0.003",
-            "N": self.base_asset,
-            "u": True,
-            "w": True,
-            "m": False,
-            "O": "1499405658657",
-            "Z": "473.199",
-            "A": "0",
-            "C": False,
-            "v": "0"
+        order_status = {
+            "status": "OK",
+            "action": "set-orders",
+            "data": {
+                "EOID1": {
+                    "averagePrice": "1000",
+                    "created": "1623217157444",
+                    "commission": "10",
+                    "currency": "EUR",
+                    "decimals": 2,
+                    "executions": {
+                        "2311070010000000968": {
+                            "commission": "1",
+                            "created": "1699361661658",
+                            "grossExecutionAmount": "1100022570",
+                            "id": "2311070010000000968",
+                            "orderId": "1699361661659511",
+                            "price": "10000",
+                            "quantity": "1",
+                            "referenceId": "1699361661660377",
+                            "tax": "0"
+                        }
+                    },
+                    "id": "EOID1",
+                    "instrumentId": 24,
+                    "limitPrice": "1000",
+                    "orderStatus": "completed",
+                    "filledStatus": "filled",
+                    "quantity": "1",
+                    "side": "buy",
+                    "symbol": "OASa",
+                    "type": "limit",
+                    "tax": "0",
+                    "userId": 1
+                }
+            },
+            "type": "orders",
+            "timestamp": "2021-07-06T08:04:40.837Z"
         }
 
-        filled_event = {
-            "e": "ticketInfo",
-            "E": "1621912542359",
-            "s": self.ex_trading_pair,
-            "q": "0.001639",
-            "t": "1621912542314",
-            "p": "61000.0",
-            "T": "899062000267837441",
-            "o": "899048013515737344",
-            "c": "1621910874883",
-            "O": "899062000118679808",
-            "a": "10043",
-            "A": "10024",
-            "m": True
-        }
+        self.exchange._order_cache_updated = True
+        self.exchange._order_id_map["EOID1"] = "OID1"
+        self.exchange._decimal_map[self.trading_pair] = (100, 1000000)
 
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = [event_message, filled_event, asyncio.CancelledError]
-        self.exchange._user_stream_tracker._user_stream = mock_queue
+        async def async_generator_side_effect():
+            yield order_status
 
-        try:
-            self.async_run_with_timeout(self.exchange._user_stream_event_listener())
-        except asyncio.CancelledError:
-            pass
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
 
         fill_event: OrderFilledEvent = self.order_filled_logger.event_log[0]
         self.assertEqual(self.exchange.current_timestamp, fill_event.timestamp)
@@ -1505,11 +1334,11 @@ class TestArchaxExchange(unittest.TestCase):
         self.assertEqual(order.trading_pair, fill_event.trading_pair)
         self.assertEqual(order.trade_type, fill_event.trade_type)
         self.assertEqual(order.order_type, fill_event.order_type)
-        match_price = Decimal(event_message["L"])
-        match_size = Decimal(event_message["l"])
+        match_price = Decimal(100)
+        match_size = Decimal("0.000001")
         self.assertEqual(match_price, fill_event.price)
         self.assertEqual(match_size, fill_event.amount)
-        self.assertEqual([TokenAmount(amount=Decimal(event_message["n"]), token=(event_message["N"]))],
+        self.assertEqual([TokenAmount(amount=Decimal("0.01"), token=("USDT"))],
                          fill_event.trade_fee.flat_fees)
 
         buy_event: BuyOrderCompletedEvent = self.buy_order_completed_logger.event_log[0]
@@ -1532,72 +1361,60 @@ class TestArchaxExchange(unittest.TestCase):
             )
         )
 
-    def test_user_stream_balance_update(self):
+    def test_user_stream_update_for_order_commission(self):
         self.exchange._set_current_timestamp(1640780000)
+        self.exchange.start_tracking_order(
+            order_id="OID1",
+            exchange_order_id="EOID1",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10000"),
+            amount=Decimal("0.000001"),
+        )
 
-        event_message = {
-            "e": "outboundAccountInfo",
-            "E": "1629969654753",
-            "T": True,
-            "W": True,
-            "D": True,
-            "B": [
-                {
-                    "a": self.base_asset,
-                    "f": "10000",
-                    "l": "500"
+        order_status = {
+            "status": "OK",
+            "action": "set-orders",
+            "data": {
+                "EOID1": {
+                    "commission": "10",
+                    "currency": "EUR",
+                    "id": "EOID1",
+                    "instrumentId": 24,
+                    "actionRef": "RefNumber"
                 }
-            ]
+            },
+            "type": "orders",
+            "timestamp": "2021-07-06T08:04:40.837Z"
         }
 
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = [event_message, asyncio.CancelledError]
-        self.exchange._user_stream_tracker._user_stream = mock_queue
+        self.exchange._order_cache_updated = True
+        self.exchange._order_id_map["EOID1"] = "OID1"
+        self.exchange._decimal_map[self.trading_pair] = (100, 1000000)
 
-        try:
-            self.async_run_with_timeout(self.exchange._user_stream_event_listener())
-        except asyncio.CancelledError:
-            pass
+        async def async_generator_side_effect():
+            yield order_status
 
-        self.assertEqual(Decimal("10000"), self.exchange.available_balances["COINALPHA"])
-        self.assertEqual(Decimal("10500"), self.exchange.get_balance("COINALPHA"))
+        self.exchange._iter_user_event_queue = async_generator_side_effect
+
+        self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+
+        self.assertEqual(0, len(self.order_filled_logger.event_log))
+        self.assertEqual(0, len(self.buy_order_completed_logger.event_log))
 
     def test_user_stream_raises_cancel_exception(self):
         self.exchange._set_current_timestamp(1640780000)
 
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = asyncio.CancelledError
-        self.exchange._user_stream_tracker._user_stream = mock_queue
+        data = AsyncMock()
+        data.get.side_effect = asyncio.CancelledError
+
+        async def async_generator_side_effect():
+            yield data
+
+        self.exchange._iter_user_event_queue = async_generator_side_effect
 
         self.assertRaises(
             asyncio.CancelledError,
             self.async_run_with_timeout,
             self.exchange._user_stream_event_listener())
-
-    @patch("hummingbot.connector.exchange.archax.archax_exchange.ArchaxExchange._sleep")
-    def test_user_stream_logs_errors(self, _):
-        self.exchange._set_current_timestamp(1640780000)
-
-        incomplete_event = {
-            "e": "outboundAccountInfo",
-            "E": "1629969654753",
-            "T": True,
-            "W": True,
-            "D": True,
-        }
-
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = [incomplete_event, asyncio.CancelledError]
-        self.exchange._user_stream_tracker._user_stream = mock_queue
-
-        try:
-            self.async_run_with_timeout(self.exchange._user_stream_event_listener())
-        except asyncio.CancelledError:
-            pass
-
-        self.assertTrue(
-            self._is_logged(
-                "ERROR",
-                "Unexpected error in user stream listener loop."
-            )
-        )

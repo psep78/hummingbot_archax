@@ -8,6 +8,7 @@ from hummingbot.connector.exchange.archax import archax_constants as CONSTANTS, 
 from hummingbot.connector.exchange.archax.archax_api_user_stream_data_source import ArchaxAPIUserStreamDataSource
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
+from hummingbot.core.web_assistant.connections.data_types import WSResponse
 
 
 class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
@@ -150,7 +151,13 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
         auth_time_mock.side_effect = [100]
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
 
-        result_auth = {'auth': 'fail', 'userId': 24068148}
+        result_auth = {
+            "action": "user-login-success",
+            "data": [],
+            "description": "Authorisation successful",
+            "status": "OK",
+            "type": "user-login"
+        }
         self.mocking_assistant.add_websocket_aiohttp_message(
             websocket_mock=ws_connect_mock.return_value,
             message=json.dumps(result_auth))
@@ -240,3 +247,113 @@ class TestArchaxAPIUserStreamDataSource(unittest.TestCase):
             "action": "ping",
         }
         self.assertEqual(expected_ping_message, sent_messages[-1])
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    @patch("hummingbot.connector.exchange.archax.archax_api_user_stream_data_source.ArchaxAPIUserStreamDataSource"
+           "._time")
+    def test_process_login_message_success(self, time_mock, ws_connect_mock):
+        auth_response = {
+            "action": "user-login-success",
+            "data": [],
+            "description": "Authorisation successful",
+            "status": "OK",
+            "type": "user-login"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = auth_response)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.send = AsyncMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+
+        output_queue = asyncio.Queue()
+
+        self.async_run_with_timeout(coroutine=self.data_source._process_ws_messages(ws_connect_mock, output_queue))
+
+        self.assertTrue(output_queue.empty())
+
+        self.assertEqual(3, ws_connect_mock.send.await_count)
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    @patch("hummingbot.connector.exchange.archax.archax_api_user_stream_data_source.ArchaxAPIUserStreamDataSource"
+           "._time")
+    def test_process_login_message_fail(self, time_mock, ws_connect_mock):
+        auth_response = {
+            "reason": "Invalid JWT provided",
+            "status": "error"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = auth_response)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.send = AsyncMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+
+        output_queue = asyncio.Queue()
+
+        self.async_run_with_timeout(coroutine=self.data_source._process_ws_messages(ws_connect_mock, output_queue))
+
+        self.assertTrue(output_queue.empty())
+        self.assertEqual(0, ws_connect_mock.send.await_count)
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    @patch("hummingbot.connector.exchange.archax.archax_api_user_stream_data_source.ArchaxAPIUserStreamDataSource"
+           "._time")
+    def test_process_login_message_denied(self, time_mock, ws_connect_mock):
+        auth_response = {
+            "action": "user-login-failed",
+            "data": [],
+            "description": "Authorisation failed",
+            "status": "ERROR",
+            "type": "user-login"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = auth_response)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.send = AsyncMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+
+        output_queue = asyncio.Queue()
+
+        try:
+            self.async_run_with_timeout(coroutine=self.data_source._process_ws_messages(ws_connect_mock, output_queue))
+        except IOError:
+            pass
+
+        self.assertTrue(output_queue.empty())
+        self.assertEqual(0, ws_connect_mock.send.await_count)
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    @patch("hummingbot.connector.exchange.archax.archax_api_user_stream_data_source.ArchaxAPIUserStreamDataSource"
+           "._time")
+    def test_process_order_message(self, time_mock, ws_connect_mock):
+        order_message = {
+            "status": "OK",
+            "action": "order-updated",
+            "data": {
+                "actionRef": "user_reference_1234",
+                "orderId": "1625642744032536",
+                "organisationId": 1,
+                "status": "open"
+            },
+            "type": "notifications",
+            "timestamp": "2021-07-07T07:25:45.140Z"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = order_message)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.send = AsyncMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+
+        output_queue = asyncio.Queue()
+
+        self.async_run_with_timeout(coroutine=self.data_source._process_ws_messages(ws_connect_mock, output_queue))
+
+        self.assertFalse(output_queue.empty())
+        self.assertEqual(0, ws_connect_mock.send.await_count)

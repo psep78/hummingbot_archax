@@ -223,8 +223,15 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
             data = ws_response.data
             self.logger().debug(f"MD data: {data}")
             event_type = data.get("type")
+            if event_type is None:
+                self.logger().error(f'Data without type tag received: {data}')
+                return
+
             if event_type == CONSTANTS.LOGIN_EVENT_TYPE:
-                await self._subscribe_channels(ws)
+                if data["status"] != "OK":
+                    raise IOError(f'Order book channel authentication failed: {data}')
+                else:
+                    await self._subscribe_channels(ws)
             elif event_type == CONSTANTS.INSTRUMENT_EVENT_TYPE:
                 self._updateInstrumentMapping(data)
             elif event_type == CONSTANTS.DIFF_EVENT_TYPE:

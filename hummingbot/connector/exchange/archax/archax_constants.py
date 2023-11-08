@@ -28,6 +28,7 @@ WSS_PRIVATE_URL = {"archax_main": "wss://ace-auth.archax.com/api/2.0/gateway",
                    "archax_testnet": "wss://ace-auth.qat.archax.com/api/2.0/gateway"}
 
 # Websocket event types
+ORDER_SUBMIT_ACTION = "order-submit"
 LOGIN_EVENT_TYPE = "user-login"
 BALANCE_EVENT_TYPE = "balances"
 INSTRUMENT_EVENT_TYPE = "instruments"
@@ -59,6 +60,11 @@ ORDER_STATE = {
     "cancelled": OrderState.CANCELED,
     "rejected": OrderState.FAILED,
     "expired": OrderState.FAILED
+}
+
+FILL_STATE = {
+    "partiallyFilled": OrderState.PARTIALLY_FILLED,
+    "filled": OrderState.FAILED
 }
 
 WS_HEARTBEAT_TIME_INTERVAL = 3000

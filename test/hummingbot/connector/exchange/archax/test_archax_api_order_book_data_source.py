@@ -667,7 +667,7 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
                     }
                 }
             },
-            "timestamp": "2021-07-01T05:17:00.691Z"
+            "timestamp": "2021-07-01T05:17:10.691Z"
         }
 
         mock_queue = AsyncMock()
@@ -920,3 +920,67 @@ class TestArchaxAPIOrderBookDataSource(unittest.TestCase):
             timedout = True
 
         self.assertTrue(timedout)
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    def test_process_login_message_fail(self, ws_connect_mock):
+        auth_response = {
+            "reason": "Invalid JWT provided",
+            "status": "error"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = auth_response)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+        ws_connect_mock.send = AsyncMock()
+
+        mock_diff_queue = MagicMock()
+        mock_trade_queue = MagicMock()
+
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_diff_queue
+        self.ob_data_source._message_queue[CONSTANTS.TRADE_EVENT_TYPE] = mock_trade_queue
+
+        mock_diff_queue.put_nowait = MagicMock()
+        mock_trade_queue.put_nowait = MagicMock()
+
+        self.async_run_with_timeout(coroutine=self.ob_data_source._process_ws_messages(ws_connect_mock))
+
+        mock_diff_queue.put_nowait.assert_not_called()
+        mock_trade_queue.put_nowait.assert_not_called()
+        ws_connect_mock.send.assert_not_awaited()
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    def test_process_login_message_denied(self, ws_connect_mock):
+        auth_response = {
+            "action": "user-login-failed",
+            "data": [],
+            "description": "Authorisation failed",
+            "status": "ERROR",
+            "type": "user-login"
+        }
+
+        async def async_generator_side_effect():
+            yield WSResponse(data = auth_response)
+
+        ws_connect_mock.iter_messages = MagicMock()
+        ws_connect_mock.iter_messages.side_effect = async_generator_side_effect
+        ws_connect_mock.send = AsyncMock()
+
+        mock_diff_queue = MagicMock()
+        mock_trade_queue = MagicMock()
+
+        self.ob_data_source._message_queue[CONSTANTS.DIFF_EVENT_TYPE] = mock_diff_queue
+        self.ob_data_source._message_queue[CONSTANTS.TRADE_EVENT_TYPE] = mock_trade_queue
+
+        mock_diff_queue.put_nowait = MagicMock()
+        mock_trade_queue.put_nowait = MagicMock()
+
+        try:
+            self.async_run_with_timeout(coroutine=self.ob_data_source._process_ws_messages(ws_connect_mock))
+        except IOError:
+            pass
+
+        mock_diff_queue.put_nowait.assert_not_called()
+        mock_trade_queue.put_nowait.assert_not_called()
+        ws_connect_mock.send.assert_not_awaited()

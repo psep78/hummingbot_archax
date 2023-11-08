@@ -114,10 +114,14 @@ class ArchaxAPIUserStreamDataSource(UserStreamTrackerDataSource):
         async for ws_response in ws.iter_messages():
             data = ws_response.data
             self.logger().debug(f'US data: {data}')
-            evt_type = data["type"]
-            if evt_type == CONSTANTS.LOGIN_EVENT_TYPE:
+            event_type = data.get("type")
+            if event_type is None:
+                self.logger().error(f'Data without type tag received: {data}')
+                return
+
+            if event_type == CONSTANTS.LOGIN_EVENT_TYPE:
                 if data["status"] != "OK":
-                    raise IOError("Private channel authentication failed.")
+                    raise IOError(f'User stream channel authentication failed: {data}')
                 else:
                     await self.subscribe_orders(ws)
                     await self.subscribe_quotes(ws)
