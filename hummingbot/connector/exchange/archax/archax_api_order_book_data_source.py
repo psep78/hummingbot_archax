@@ -72,7 +72,6 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
             trading_pair = self._id_to_pair_mapping.get(instrument_id)
             if trading_pair is None:
-                self.logger().error(f"trading_pair for {instrument_id} not found")
                 continue
 
             if self._trading_pairs.count(trading_pair) == 0:
@@ -100,7 +99,6 @@ class ArchaxAPIOrderBookDataSource(OrderBookTrackerDataSource):
             instrument_data = raw_message["data"][item]
             instrument_id = int(item)
             if instrument_id not in self._id_to_pair_mapping:
-                self.logger().error(f"trading_pair for {instrument_id} not found")
                 continue
 
             trading_pair = self._id_to_pair_mapping[instrument_id]

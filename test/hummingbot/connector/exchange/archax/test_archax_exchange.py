@@ -4,7 +4,7 @@ import re
 import unittest
 from decimal import Decimal
 from typing import Awaitable, Dict, NamedTuple, Optional
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from aioresponses import aioresponses
 from bidict import bidict
@@ -130,6 +130,19 @@ class TestArchaxExchange(unittest.TestCase):
                     "symbol": "APP",
                     "currency": "USD",
                     "description": "APP-USD trading pair",
+                    "status": "Trading",
+                    "type": "security",
+                    "quantityDecimalPlaces": 6,
+                    "priceDecimalPlaces": 2,
+                    "initialPrice": "1000",
+                    "minimumOrderValue": "10",
+                    "tickSize": "0.01"
+                }, {
+                    "id": 11,
+                    "name": "USD",
+                    "symbol": "USD",
+                    "currency": "USD",
+                    "description": "USD",
                     "status": "Trading",
                     "type": "security",
                     "quantityDecimalPlaces": 6,
@@ -582,10 +595,10 @@ class TestArchaxExchange(unittest.TestCase):
         available_balances = self.exchange.available_balances
         total_balances = self.exchange.get_all_balances()
 
-        self.assertEqual(Decimal("5555"), available_balances["COINALPHA-USDT"])
-        self.assertEqual(Decimal("7777"), available_balances["BTC-USD"])
-        self.assertEqual(Decimal("6666"), total_balances["COINALPHA-USDT"])
-        self.assertEqual(Decimal("8888"), total_balances["BTC-USD"])
+        self.assertEqual(Decimal("5555"), available_balances["COINALPHA"])
+        self.assertEqual(Decimal("7777"), available_balances["BTC"])
+        self.assertEqual(Decimal("6666"), total_balances["COINALPHA"])
+        self.assertEqual(Decimal("8888"), total_balances["BTC"])
 
     @aioresponses()
     def test_update_balances_failure(self, mock_api):
@@ -1406,7 +1419,7 @@ class TestArchaxExchange(unittest.TestCase):
     def test_user_stream_raises_cancel_exception(self):
         self.exchange._set_current_timestamp(1640780000)
 
-        data = AsyncMock()
+        data = MagicMock()
         data.get.side_effect = asyncio.CancelledError
 
         async def async_generator_side_effect():

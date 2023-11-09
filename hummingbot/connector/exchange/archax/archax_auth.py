@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 
 import jwt
 
@@ -83,6 +82,3 @@ class ArchaxAuth(AuthBase):
     def extract_org_id(self):
         decoded_data = jwt.decode(jwt=self.archax_jwt, verify=False, algorithms=['RS256', ])
         self.primary_org = decoded_data["primaryOrg"]
-
-    def _time(self):
-        return time.time()

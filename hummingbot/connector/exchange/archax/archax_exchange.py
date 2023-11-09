@@ -271,6 +271,9 @@ class ArchaxExchange(ExchangePyBase):
                 if archax_utils.is_exchange_information_valid(rule) is False:
                     continue
 
+                if rule.get("symbol") == rule.get("currency"):
+                    continue
+
                 trading_pair = f'{rule.get("symbol")}-{rule.get("currency")}'
 
                 px_decimal = Decimal(pow(10, rule.get("priceDecimalPlaces")))
@@ -368,7 +371,7 @@ class ArchaxExchange(ExchangePyBase):
                 self._order_cache[order_details["actionRef"]] = order_details
             hbt_order_id = self._order_id_map.get(archax_order)
             if hbt_order_id is None:
-                self.logger().warn(f"No hbt order found for: {archax_order}")
+                self.logger().debug(f"No hbt order found for: {archax_order}")
                 continue
             tracked_order = self._order_tracker.active_orders.get(hbt_order_id)
             if tracked_order is None:
@@ -459,10 +462,12 @@ class ArchaxExchange(ExchangePyBase):
             if instrument_id not in self._mapping:
                 continue
             asset_name = self._mapping[instrument_id]
+            base, _ = split_hb_trading_pair(asset_name)
             free_balance = Decimal(balance_item["available"])
             total_balance = Decimal(balance_item["total"])
-            self._account_available_balances[asset_name] = free_balance
-            self._account_balances[asset_name] = total_balance
+            self._account_available_balances[base] = free_balance
+            self._account_balances[base] = total_balance
+            self.logger().debug(f"Balance: {base} : {free_balance} / {total_balance}")
 
     def process_order_submit(self, data: Dict[str, Any]):
         self.logger().info(f"Order submitted: {data}")

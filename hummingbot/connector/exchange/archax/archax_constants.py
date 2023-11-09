@@ -64,7 +64,8 @@ ORDER_STATE = {
 
 FILL_STATE = {
     "partiallyFilled": OrderState.PARTIALLY_FILLED,
-    "filled": OrderState.FAILED
+    "filled": OrderState.FAILED,
+    "unfilled": OrderState.PENDING_CREATE
 }
 
 WS_HEARTBEAT_TIME_INTERVAL = 3000
@@ -78,5 +79,5 @@ ONE_MINUTE = 60
 RATE_LIMITS = [
     RateLimit(limit_id=EXCHANGE_INFO_PATH_URL, limit=60, time_interval=ONE_MINUTE),
     RateLimit(limit_id=SERVER_TIME_PATH_URL, limit=60, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=LOGIN_PATH_URL, limit=60, time_interval=ONE_MINUTE),
+    RateLimit(limit_id=LOGIN_PATH_URL, limit=10, time_interval=ONE_MINUTE),
 ]
