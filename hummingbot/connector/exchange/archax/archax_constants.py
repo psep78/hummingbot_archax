@@ -19,13 +19,13 @@ SELL = "sell"
 TIME_IN_FORCE_GTC = "GTC"
 # Base URL
 REST_URLS = {"archax_main": "https://ace-auth.archax.com/api/2.0",
-             "archax_testnet": "https://ace-auth.qat.archax.com/api/2.0"}
+             "archax_testnet": "https://ace-auth.cte.archax.com/api/2.0"}
 
 WSS_V2_PUBLIC_URL = {"archax_main": "wss://ace-auth.archax.com/api/2.0/gateway",
-                     "archax_testnet": "wss://ace-auth.qat.archax.com/api/2.0/gateway"}
+                     "archax_testnet": "wss://ace-auth.cte.archax.com/api/2.0/gateway"}
 
 WSS_PRIVATE_URL = {"archax_main": "wss://ace-auth.archax.com/api/2.0/gateway",
-                   "archax_testnet": "wss://ace-auth.qat.archax.com/api/2.0/gateway"}
+                   "archax_testnet": "wss://ace-auth.cte.archax.com/api/2.0/gateway"}
 
 # Websocket event types
 ORDER_SUBMIT_ACTION = "order-submit"
